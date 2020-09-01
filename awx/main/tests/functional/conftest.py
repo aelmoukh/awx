@@ -8,12 +8,14 @@ from unittest.mock import PropertyMock
 
 # Django
 from django.urls import resolve
+from django.http import Http404
+from django.core.handlers.exception import response_for_exception
 from django.contrib.auth.models import User
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db.backends.sqlite3.base import SQLiteCursorWrapper
-from jsonbfield.fields import JSONField
 
 # AWX
+from awx.main.fields import JSONBField
 from awx.main.models.projects import Project
 from awx.main.models.ha import Instance
 
@@ -121,13 +123,28 @@ def project_playbooks():
 
 
 @pytest.fixture
+def run_computed_fields_right_away(request):
+
+    def run_me(inventory_id):
+        i = Inventory.objects.get(id=inventory_id)
+        i.update_computed_fields()
+
+    mocked = mock.patch(
+        'awx.main.signals.update_inventory_computed_fields.delay',
+        new=run_me
+    )
+    mocked.start()
+
+    request.addfinalizer(mocked.stop)
+
+
+@pytest.fixture
 @mock.patch.object(Project, "update", lambda self, **kwargs: None)
 def project(instance, organization):
     prj = Project.objects.create(name="test-proj",
                                  description="test-proj-desc",
                                  organization=organization,
                                  playbook_files=['helloworld.yml', 'alt-helloworld.yml'],
-                                 local_path='_92__test_proj',
                                  scm_revision='1234567890123456789012345678901234567890',
                                  scm_url='localhost',
                                  scm_type='git'
@@ -162,8 +179,8 @@ def project_factory(organization):
 
 
 @pytest.fixture
-def job_factory(job_template, admin):
-    def factory(job_template=job_template, initial_state='new', created_by=admin):
+def job_factory(jt_linked, admin):
+    def factory(job_template=jt_linked, initial_state='new', created_by=admin):
         return job_template.create_unified_job(_eager_fields={
             'status': initial_state, 'created_by': created_by})
     return factory
@@ -201,6 +218,13 @@ def instance(settings):
 @pytest.fixture
 def organization(instance):
     return Organization.objects.create(name="test-org", description="test-org-desc")
+
+
+@pytest.fixture
+def credentialtype_kube():
+    kube = CredentialType.defaults['kubernetes_bearer_token']()
+    kube.save()
+    return kube
 
 
 @pytest.fixture
@@ -271,14 +295,21 @@ def credentialtype_external():
         }],
         'required': ['url', 'token', 'key'],
     }
-    external_type = CredentialType(
-        kind='external',
-        managed_by_tower=True,
-        name='External Service',
-        inputs=external_type_inputs
-    )
-    external_type.save()
-    return external_type
+
+    class MockPlugin(object):
+        def backend(self, **kwargs):
+            return 'secret'
+
+    with mock.patch('awx.main.models.credential.CredentialType.plugin', new_callable=PropertyMock) as mock_plugin:
+        mock_plugin.return_value = MockPlugin()
+        external_type = CredentialType(
+            kind='external',
+            managed_by_tower=True,
+            name='External Service',
+            inputs=external_type_inputs
+        )
+        external_type.save()
+        yield external_type
 
 
 @pytest.fixture
@@ -337,6 +368,12 @@ def other_external_credential(credentialtype_external):
 
 
 @pytest.fixture
+def kube_credential(credentialtype_kube):
+    return Credential.objects.create(credential_type=credentialtype_kube, name='kube-cred',
+                                     inputs={'host': 'my.cluster', 'bearer_token': 'my-token', 'verify_ssl': False})
+
+
+@pytest.fixture
 def inventory(organization):
     return organization.inventories.create(name="test-inv")
 
@@ -385,7 +422,9 @@ def notification_template(organization):
                                                organization=organization,
                                                notification_type="webhook",
                                                notification_configuration=dict(url="http://localhost",
-                                                                               headers={"Test": "Header"}))
+                                                                               username="",
+                                                                               password="",
+                                                                               headers={"Test": "Header",}))
 
 
 @pytest.fixture
@@ -528,7 +567,10 @@ def inventory_source_factory(inventory_factory):
 
 @pytest.fixture
 def inventory_update(inventory_source):
-    return InventoryUpdate.objects.create(inventory_source=inventory_source)
+    return InventoryUpdate.objects.create(
+        inventory_source=inventory_source,
+        source=inventory_source.source
+    )
 
 
 @pytest.fixture
@@ -566,8 +608,12 @@ def _request(verb):
         if 'format' not in kwargs and 'content_type' not in kwargs:
             kwargs['format'] = 'json'
 
-        view, view_args, view_kwargs = resolve(urllib.parse.urlparse(url)[2])
         request = getattr(APIRequestFactory(), verb)(url, **kwargs)
+        request_error = None
+        try:
+            view, view_args, view_kwargs = resolve(urllib.parse.urlparse(url)[2])
+        except Http404 as e:
+            request_error = e
         if isinstance(kwargs.get('cookies', None), dict):
             for key, value in kwargs['cookies'].items():
                 request.COOKIES[key] = value
@@ -576,7 +622,10 @@ def _request(verb):
         if user:
             force_authenticate(request, user=user)
 
-        response = view(request, *view_args, **view_kwargs)
+        if not request_error:
+            response = view(request, *view_args, **view_kwargs)
+        else:
+            response = response_for_exception(request, request_error)
         if middleware:
             middleware.process_response(request, response)
         if expect:
@@ -654,11 +703,8 @@ def ad_hoc_command_factory(inventory, machine_credential, admin):
 
 
 @pytest.fixture
-def job_template(organization):
-    jt = JobTemplate(name='test-job_template')
-    jt.save()
-
-    return jt
+def job_template():
+    return JobTemplate.objects.create(name='test-job_template')
 
 
 @pytest.fixture
@@ -670,20 +716,16 @@ def job_template_labels(organization, job_template):
 
 
 @pytest.fixture
-def jt_linked(job_template_factory, credential, net_credential, vault_credential):
+def jt_linked(organization, project, inventory, machine_credential, credential, net_credential, vault_credential):
     '''
     A job template with a reasonably complete set of related objects to
     test RBAC and other functionality affected by related objects
     '''
-    objects = job_template_factory(
-        'testJT', organization='org1', project='proj1', inventory='inventory1',
-        credential='cred1')
-    jt = objects.job_template
-    jt.credentials.add(vault_credential)
-    jt.save()
-    # Add AWS cloud credential and network credential
-    jt.credentials.add(credential)
-    jt.credentials.add(net_credential)
+    jt = JobTemplate.objects.create(
+        project=project, inventory=inventory, playbook='helloworld.yml',
+        organization=organization
+    )
+    jt.credentials.add(machine_credential, vault_credential, credential, net_credential)
     return jt
 
 
@@ -737,7 +779,7 @@ def get_db_prep_save(self, value, connection, **kwargs):
 
 @pytest.fixture
 def monkeypatch_jsonbfield_get_db_prep_save(mocker):
-    JSONField.get_db_prep_save = get_db_prep_save
+    JSONBField.get_db_prep_save = get_db_prep_save
 
 
 @pytest.fixture

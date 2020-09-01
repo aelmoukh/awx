@@ -197,7 +197,7 @@ def create_survey_spec(variables=None, default_type='integer', required=True, mi
 #
 
 
-def create_job_template(name, roles=None, persisted=True, **kwargs):
+def create_job_template(name, roles=None, persisted=True, webhook_service='', **kwargs):
     Objects = generate_objects(["job_template", "jobs",
                                 "organization",
                                 "inventory",
@@ -220,7 +220,7 @@ def create_job_template(name, roles=None, persisted=True, **kwargs):
     if 'organization' in kwargs:
         org = kwargs['organization']
         if type(org) is not Organization:
-            org = mk_organization(org, '%s-desc'.format(org), persisted=persisted)
+            org = mk_organization(org, org, persisted=persisted)
 
     if 'credential' in kwargs:
         cred = kwargs['credential']
@@ -252,11 +252,10 @@ def create_job_template(name, roles=None, persisted=True, **kwargs):
     else:
         spec = None
 
-    jt = mk_job_template(name, project=proj,
-                         inventory=inv, credential=cred,
+    jt = mk_job_template(name, project=proj, inventory=inv, credential=cred,
                          network_credential=net_cred, cloud_credential=cloud_cred,
                          job_type=job_type, spec=spec, extra_vars=extra_vars,
-                         persisted=persisted)
+                         persisted=persisted, webhook_service=webhook_service)
 
     if 'jobs' in kwargs:
         for i in kwargs['jobs']:
@@ -299,7 +298,7 @@ def create_organization(name, roles=None, persisted=True, **kwargs):
     labels = {}
     notification_templates = {}
 
-    org = mk_organization(name, '%s-desc'.format(name), persisted=persisted)
+    org = mk_organization(name, name, persisted=persisted)
 
     if 'inventories' in kwargs:
         for i in kwargs['inventories']:
@@ -320,11 +319,11 @@ def create_organization(name, roles=None, persisted=True, **kwargs):
     users = generate_users(org, teams, False, persisted, users=kwargs.get('users'))
 
     if 'labels' in kwargs:
-        for l in kwargs['labels']:
-            if type(l) is Label:
-                labels[l.name] = l
+        for label_obj in kwargs['labels']:
+            if type(label_obj) is Label:
+                labels[label_obj.name] = label_obj
             else:
-                labels[l] = mk_label(l, organization=org, persisted=persisted)
+                labels[label_obj] = mk_label(label_obj, organization=org, persisted=persisted)
 
     if 'notification_templates' in kwargs:
         for nt in kwargs['notification_templates']:
@@ -401,7 +400,7 @@ def generate_workflow_job_template_nodes(workflow_job_template,
 
 
 # TODO: Implement survey and jobs
-def create_workflow_job_template(name, organization=None, persisted=True, **kwargs):
+def create_workflow_job_template(name, organization=None, persisted=True, webhook_service='', **kwargs):
     Objects = generate_objects(["workflow_job_template",
                                 "workflow_job_template_nodes",
                                 "survey",], kwargs)
@@ -418,7 +417,8 @@ def create_workflow_job_template(name, organization=None, persisted=True, **kwar
                                     organization=organization,
                                     spec=spec,
                                     extra_vars=extra_vars,
-                                    persisted=persisted)
+                                    persisted=persisted,
+                                    webhook_service=webhook_service)
 
 
 

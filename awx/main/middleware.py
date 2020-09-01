@@ -12,26 +12,23 @@ import urllib.parse
 
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.db.models.signals import post_save
 from django.db.migrations.executor import MigrationExecutor
-from django.db import IntegrityError, connection
-from django.utils.functional import curry
-from django.shortcuts import get_object_or_404, redirect
+from django.db import connection
+from django.shortcuts import redirect
 from django.apps import apps
+from django.utils.deprecation import MiddlewareMixin
 from django.utils.translation import ugettext_lazy as _
 from django.urls import reverse, resolve
 
-from awx.main.models import ActivityStream
 from awx.main.utils.named_url_graph import generate_graph, GraphNode
 from awx.conf import fields, register
 
 
 logger = logging.getLogger('awx.main.middleware')
-analytics_logger = logging.getLogger('awx.analytics.activity_stream')
 perf_logger = logging.getLogger('awx.analytics.performance')
 
 
-class TimingMiddleware(threading.local):
+class TimingMiddleware(threading.local, MiddlewareMixin):
 
     dest = '/var/log/tower/profile'
 
@@ -61,64 +58,21 @@ class TimingMiddleware(threading.local):
         with open(filepath, 'w') as f:
             f.write('%s %s\n' % (request.method, request.get_full_path()))
             pstats.Stats(self.prof, stream=f).sort_stats('cumulative').print_stats()
+
+        if settings.AWX_REQUEST_PROFILE_WITH_DOT:
+            from gprof2dot import main as generate_dot
+            raw = os.path.join(self.dest, filename) + '.raw'
+            pstats.Stats(self.prof).dump_stats(raw)
+            generate_dot([
+                '-n', '2.5', '-f', 'pstats', '-o',
+                os.path.join( self.dest, filename).replace('.pstats', '.dot'),
+                raw
+            ])
+            os.remove(raw)
         return filepath
 
 
-class ActivityStreamMiddleware(threading.local):
-
-    def __init__(self):
-        self.disp_uid = None
-        self.instance_ids = []
-
-    def process_request(self, request):
-        if hasattr(request, 'user') and hasattr(request.user, 'is_authenticated') and request.user.is_authenticated():
-            user = request.user
-        else:
-            user = None
-
-        set_actor = curry(self.set_actor, user)
-        self.disp_uid = str(uuid.uuid1())
-        self.instance_ids = []
-        post_save.connect(set_actor, sender=ActivityStream, dispatch_uid=self.disp_uid, weak=False)
-
-    def process_response(self, request, response):
-        drf_request = getattr(request, 'drf_request', None)
-        drf_user = getattr(drf_request, 'user', None)
-        if self.disp_uid is not None:
-            post_save.disconnect(dispatch_uid=self.disp_uid)
-
-        for instance in ActivityStream.objects.filter(id__in=self.instance_ids):
-            if drf_user and drf_user.id:
-                instance.actor = drf_user
-                try:
-                    instance.save(update_fields=['actor'])
-                    analytics_logger.info('Activity Stream update entry for %s' % str(instance.object1),
-                                          extra=dict(changes=instance.changes, relationship=instance.object_relationship_type,
-                                          actor=drf_user.username, operation=instance.operation,
-                                          object1=instance.object1, object2=instance.object2))
-                except IntegrityError:
-                    logger.debug("Integrity Error saving Activity Stream instance for id : " + str(instance.id))
-            # else:
-            #     obj1_type_actual = instance.object1_type.split(".")[-1]
-            #     if obj1_type_actual in ("InventoryUpdate", "ProjectUpdate", "Job") and instance.id is not None:
-            #         instance.delete()
-
-        self.instance_ids = []
-        return response
-
-    def set_actor(self, user, sender, instance, **kwargs):
-        if sender == ActivityStream:
-            if isinstance(user, User) and instance.actor is None:
-                user = User.objects.filter(id=user.id)
-                if user.exists():
-                    user = user[0]
-                    instance.actor = user
-            else:
-                if instance.id not in self.instance_ids:
-                    self.instance_ids.append(instance.id)
-
-
-class SessionTimeoutMiddleware(object):
+class SessionTimeoutMiddleware(MiddlewareMixin):
     """
     Resets the session timeout for both the UI and the actual session for the API
     to the value of SESSION_COOKIE_AGE on every request if there is a valid session.
@@ -151,9 +105,9 @@ def _customize_graph():
         settings.NAMED_URL_GRAPH[Instance].add_bindings()
 
 
-class URLModificationMiddleware(object):
+class URLModificationMiddleware(MiddlewareMixin):
 
-    def __init__(self):
+    def __init__(self, get_response=None):
         models = [m for m in apps.get_app_config('main').get_models() if hasattr(m, 'get_absolute_url')]
         generate_graph(models)
         _customize_graph()
@@ -177,22 +131,57 @@ class URLModificationMiddleware(object):
             category=_('Named URL'),
             category_slug='named-url',
         )
+        super().__init__(get_response)
 
-    def _named_url_to_pk(self, node, named_url):
+    @staticmethod
+    def _hijack_for_old_jt_name(node, kwargs, named_url):
+        try:
+            int(named_url)
+            return False
+        except ValueError:
+            pass
+        JobTemplate = node.model
+        name = urllib.parse.unquote(named_url)
+        return JobTemplate.objects.filter(name=name).order_by('organization__created').first()
+
+    @classmethod
+    def _named_url_to_pk(cls, node, resource, named_url):
         kwargs = {}
-        if not node.populate_named_url_query_kwargs(kwargs, named_url):
-            return named_url
-        return str(get_object_or_404(node.model, **kwargs).pk)
+        if node.populate_named_url_query_kwargs(kwargs, named_url):
+            match = node.model.objects.filter(**kwargs).first()
+            if match:
+                return str(match.pk)
+            else:
+                # if the name does *not* resolve to any actual resource,
+                # we should still attempt to route it through so that 401s are
+                # respected
+                # using "zero" here will cause the URL regex to match e.g.,
+                # /api/v2/users/<integer>/, but it also means that anonymous
+                # users will go down the path of having their credentials
+                # verified; in this way, *anonymous* users will that visit
+                # /api/v2/users/invalid-username/ *won't* see a 404, they'll
+                # see a 401 as if they'd gone to /api/v2/users/0/
+                #
+                return '0'
+        if resource == 'job_templates' and '++' not in named_url:
+            # special case for deprecated job template case
+            # will not raise a 404 on its own
+            jt = cls._hijack_for_old_jt_name(node, kwargs, named_url)
+            if jt:
+                return str(jt.pk)
+        return named_url
 
-    def _convert_named_url(self, url_path):
+    @classmethod
+    def _convert_named_url(cls, url_path):
         url_units = url_path.split('/')
         # If the identifier is an empty string, it is always invalid.
         if len(url_units) < 6 or url_units[1] != 'api' or url_units[2] not in ['v2'] or not url_units[4]:
             return url_path
         resource = url_units[3]
         if resource in settings.NAMED_URL_MAPPINGS:
-            url_units[4] = self._named_url_to_pk(settings.NAMED_URL_GRAPH[settings.NAMED_URL_MAPPINGS[resource]],
-                                                 url_units[4])
+            url_units[4] = cls._named_url_to_pk(
+                settings.NAMED_URL_GRAPH[settings.NAMED_URL_MAPPINGS[resource]],
+                resource, url_units[4])
         return '/'.join(url_units)
 
     def process_request(self, request):
@@ -203,11 +192,12 @@ class URLModificationMiddleware(object):
             old_path = request.path_info
         new_path = self._convert_named_url(old_path)
         if request.path_info != new_path:
+            request.environ['awx.named_url_rewritten'] = request.path
             request.path = request.path.replace(request.path_info, new_path)
             request.path_info = new_path
 
 
-class MigrationRanCheckMiddleware(object):
+class MigrationRanCheckMiddleware(MiddlewareMixin):
 
     def process_request(self, request):
         executor = MigrationExecutor(connection)

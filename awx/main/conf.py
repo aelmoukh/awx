@@ -2,12 +2,14 @@
 import json
 import logging
 import os
+from distutils.version import LooseVersion as Version
 
 # Django
 from django.utils.translation import ugettext_lazy as _
 
 # Django REST Framework
 from rest_framework import serializers
+from rest_framework.fields import FloatField
 
 # Tower
 from awx.conf import fields, register, register_validate
@@ -53,15 +55,6 @@ register(
 )
 
 register(
-    'TOWER_ADMIN_ALERTS',
-    field_class=fields.BooleanField,
-    label=_('Enable Administrator Alerts'),
-    help_text=_('Email Admin users for system events that may require attention.'),
-    category=_('System'),
-    category_slug='system',
-)
-
-register(
     'TOWER_URL_BASE',
     field_class=fields.URLField,
     schemes=('http', 'https'),
@@ -87,11 +80,11 @@ register(
 )
 
 register(
-    'PROXY_IP_WHITELIST',
+    'PROXY_IP_ALLOWED_LIST',
     field_class=fields.StringListField,
-    label=_('Proxy IP Whitelist'),
+    label=_('Proxy IP Allowed List'),
     help_text=_("If Tower is behind a reverse proxy/load balancer, use this setting "
-                "to whitelist the proxy IP addresses from which Tower should trust "
+                "to configure the proxy IP addresses from which Tower should trust "
                 "custom REMOTE_HOST_HEADERS header values. "
                 "If this setting is an empty list (the default), the headers specified by "
                 "REMOTE_HOST_HEADERS will be trusted unconditionally')"),
@@ -118,8 +111,46 @@ register(
     default=_load_default_license_from_file,
     label=_('License'),
     help_text=_('The license controls which features and functionality are '
-                'enabled. Use /api/v1/config/ to update or change '
+                'enabled. Use /api/v2/config/ to update or change '
                 'the license.'),
+    category=_('System'),
+    category_slug='system',
+)
+
+register(
+    'REDHAT_USERNAME',
+    field_class=fields.CharField,
+    default='',
+    allow_blank=True,
+    encrypted=False,
+    read_only=False,
+    label=_('Red Hat customer username'),
+    help_text=_('This username is used to retrieve license information and to send Automation Analytics'),  # noqa
+    category=_('System'),
+    category_slug='system',
+)
+
+register(
+    'REDHAT_PASSWORD',
+    field_class=fields.CharField,
+    default='',
+    allow_blank=True,
+    encrypted=True,
+    read_only=False,
+    label=_('Red Hat customer password'),
+    help_text=_('This password is used to retrieve license information and to send Automation Analytics'),  # noqa
+    category=_('System'),
+    category_slug='system',
+)
+
+register(
+    'AUTOMATION_ANALYTICS_URL',
+    field_class=fields.URLField,
+    default='https://example.com',
+    schemes=('http', 'https'),
+    allow_plain_hostname=True,  # Allow hostname only without TLD.
+    label=_('Automation Analytics upload URL.'),
+    help_text=_('This setting is used to to configure data collection for the Automation Analytics dashboard'),
     category=_('System'),
     category_slug='system',
 )
@@ -210,21 +241,9 @@ register(
     field_class=fields.StringListField,
     required=False,
     label=_('Paths to expose to isolated jobs'),
-    help_text=_('Whitelist of paths that would otherwise be hidden to expose to isolated jobs. Enter one path per line.'),
+    help_text=_('List of paths that would otherwise be hidden to expose to isolated jobs. Enter one path per line.'),
     category=_('Jobs'),
     category_slug='jobs',
-)
-
-register(
-    'AWX_ISOLATED_VERBOSITY',
-    field_class=fields.IntegerField,
-    min_value=0,
-    max_value=5,
-    label=_('Verbosity level for isolated node management tasks'),
-    help_text=_('This can be raised to aid in debugging connection issues for isolated task execution'),
-    category=_('Jobs'),
-    category_slug='jobs',
-    default=0
 )
 
 register(
@@ -258,6 +277,16 @@ register(
                 'Value should be substantially greater than expected network latency.'),
     category=_('Jobs'),
     category_slug='jobs',
+)
+
+register(
+    'AWX_ISOLATED_HOST_KEY_CHECKING',
+    field_class=fields.BooleanField,
+    label=_('Isolated host key checking'),
+    help_text=_('When set to True, AWX will enforce strict host key checking for communication with isolated nodes.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+    default=False
 )
 
 register(
@@ -298,6 +327,53 @@ register(
 )
 
 register(
+    'AWX_RESOURCE_PROFILING_ENABLED',
+    field_class=fields.BooleanField,
+    default=False,
+    label=_('Enable detailed resource profiling on all playbook runs'),
+    help_text=_('If set, detailed resource profiling data will be collected on all jobs. '
+                'This data can be gathered with `sosreport`.'),  # noqa
+    category=_('Jobs'),
+    category_slug='jobs',
+)
+
+register(
+    'AWX_RESOURCE_PROFILING_CPU_POLL_INTERVAL',
+    field_class=FloatField,
+    default='0.25',
+    label=_('Interval (in seconds) between polls for cpu usage.'),
+    help_text=_('Interval (in seconds) between polls for cpu usage. '
+                'Setting this lower than the default will affect playbook performance.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+    required=False,
+)
+
+register(
+    'AWX_RESOURCE_PROFILING_MEMORY_POLL_INTERVAL',
+    field_class=FloatField,
+    default='0.25',
+    label=_('Interval (in seconds) between polls for memory usage.'),
+    help_text=_('Interval (in seconds) between polls for memory usage. '
+                'Setting this lower than the default will affect playbook performance.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+    required=False,
+)
+
+register(
+    'AWX_RESOURCE_PROFILING_PID_POLL_INTERVAL',
+    field_class=FloatField,
+    default='0.25',
+    label=_('Interval (in seconds) between polls for PID count.'),
+    help_text=_('Interval (in seconds) between polls for PID count. '
+                'Setting this lower than the default will affect playbook performance.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+    required=False,
+)
+
+register(
     'AWX_TASK_ENV',
     field_class=fields.KeyValueField,
     default={},
@@ -312,10 +388,19 @@ register(
     'INSIGHTS_TRACKING_STATE',
     field_class=fields.BooleanField,
     default=False,
-    label=_('Gather data for Automation Insights'),
-    help_text=_('Enables Tower to gather data on automation and send it to Red Hat Insights.'),
+    label=_('Gather data for Automation Analytics'),
+    help_text=_('Enables Tower to gather data on automation and send it to Red Hat.'),
     category=_('System'),
     category_slug='system',
+)
+
+register(
+    'PROJECT_UPDATE_VVV',
+    field_class=fields.BooleanField,
+    label=_('Run Project Updates With Higher Verbosity'),
+    help_text=_('Adds the CLI -vvv flag to ansible-playbook runs of project_update.yml used for project updates.'),
+    category=_('Jobs'),
+    category_slug='jobs',
 )
 
 register(
@@ -326,6 +411,121 @@ register(
     help_text=_('Allows roles to be dynamically downloaded from a requirements.yml file for SCM projects.'),
     category=_('Jobs'),
     category_slug='jobs',
+)
+
+register(
+    'AWX_COLLECTIONS_ENABLED',
+    field_class=fields.BooleanField,
+    default=True,
+    label=_('Enable Collection(s) Download'),
+    help_text=_('Allows collections to be dynamically downloaded from a requirements.yml file for SCM projects.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+)
+
+register(
+    'AWX_SHOW_PLAYBOOK_LINKS',
+    field_class=fields.BooleanField,
+    default=False,
+    label=_('Follow symlinks'),
+    help_text=_(
+        'Follow symbolic links when scanning for playbooks. Be aware that setting this to True can lead '
+        'to infinite recursion if a link points to a parent directory of itself.'
+    ),
+    category=_('Jobs'),
+    category_slug='jobs',
+)
+
+register(
+    'PRIMARY_GALAXY_URL',
+    field_class=fields.URLField,
+    required=False,
+    allow_blank=True,
+    label=_('Primary Galaxy Server URL'),
+    help_text=_(
+        'For organizations that run their own Galaxy service, this gives the option to specify a '
+        'host as the primary galaxy server. Requirements will be downloaded from the primary if the '
+        'specific role or collection is available there. If the content is not avilable in the primary, '
+        'or if this field is left blank, it will default to galaxy.ansible.com.'
+    ),
+    category=_('Jobs'),
+    category_slug='jobs'
+)
+
+register(
+    'PRIMARY_GALAXY_USERNAME',
+    field_class=fields.CharField,
+    required=False,
+    allow_blank=True,
+    label=_('Primary Galaxy Server Username'),
+    help_text=_('(This setting is deprecated and will be removed in a future release) '
+                'For using a galaxy server at higher precedence than the public Ansible Galaxy. '
+                'The username to use for basic authentication against the Galaxy instance, '
+                'this is mutually exclusive with PRIMARY_GALAXY_TOKEN.'),
+    category=_('Jobs'),
+    category_slug='jobs'
+)
+
+register(
+    'PRIMARY_GALAXY_PASSWORD',
+    field_class=fields.CharField,
+    encrypted=True,
+    required=False,
+    allow_blank=True,
+    label=_('Primary Galaxy Server Password'),
+    help_text=_('(This setting is deprecated and will be removed in a future release) '
+                'For using a galaxy server at higher precedence than the public Ansible Galaxy. '
+                'The password to use for basic authentication against the Galaxy instance, '
+                'this is mutually exclusive with PRIMARY_GALAXY_TOKEN.'),
+    category=_('Jobs'),
+    category_slug='jobs'
+)
+
+register(
+    'PRIMARY_GALAXY_TOKEN',
+    field_class=fields.CharField,
+    encrypted=True,
+    required=False,
+    allow_blank=True,
+    label=_('Primary Galaxy Server Token'),
+    help_text=_('For using a galaxy server at higher precedence than the public Ansible Galaxy. '
+                'The token to use for connecting with the Galaxy instance, '
+                'this is mutually exclusive with corresponding username and password settings.'),
+    category=_('Jobs'),
+    category_slug='jobs'
+)
+
+register(
+    'PRIMARY_GALAXY_AUTH_URL',
+    field_class=fields.CharField,
+    required=False,
+    allow_blank=True,
+    label=_('Primary Galaxy Authentication URL'),
+    help_text=_('For using a galaxy server at higher precedence than the public Ansible Galaxy. '
+                'The token_endpoint of a Keycloak server.'),
+    category=_('Jobs'),
+    category_slug='jobs'
+)
+
+register(
+    'PUBLIC_GALAXY_ENABLED',
+    field_class=fields.BooleanField,
+    default=True,
+    label=_('Allow Access to Public Galaxy'),
+    help_text=_('Allow or deny access to the public Ansible Galaxy during project updates.'),
+    category=_('Jobs'),
+    category_slug='jobs'
+)
+
+register(
+    'GALAXY_IGNORE_CERTS',
+    field_class=fields.BooleanField,
+    default=False,
+    label=_('Ignore Ansible Galaxy SSL Certificate Verification'),
+    help_text=_('If set to true, certificate validation will not be done when'
+                'installing content from any Galaxy server.'),
+    category=_('Jobs'),
+    category_slug='jobs'
 )
 
 register(
@@ -420,6 +620,18 @@ register(
 )
 
 register(
+    'MAX_FORKS',
+    field_class=fields.IntegerField,
+    allow_null=False,
+    default=200,
+    label=_('Maximum number of forks per job.'),
+    help_text=_('Saving a Job Template with more than this number of forks will result in an error. '
+                'When set to 0, no limit is applied.'),
+    category=_('Jobs'),
+    category_slug='jobs',
+)
+
+register(
     'LOG_AGGREGATOR_HOST',
     field_class=fields.CharField,
     allow_null=True,
@@ -458,7 +670,7 @@ register(
     allow_blank=True,
     default='',
     label=_('Logging Aggregator Username'),
-    help_text=_('Username for external log aggregator (if required).'),
+    help_text=_('Username for external log aggregator (if required; HTTP/s only).'),
     category=_('Logging'),
     category_slug='logging',
     required=False,
@@ -470,7 +682,7 @@ register(
     default='',
     encrypted=True,
     label=_('Logging Aggregator Password/Token'),
-    help_text=_('Password or authentication token for external log aggregator (if required).'),
+    help_text=_('Password or authentication token for external log aggregator (if required; HTTP/s only).'),
     category=_('Logging'),
     category_slug='logging',
     required=False,
@@ -568,6 +780,62 @@ register(
     category=_('Logging'),
     category_slug='logging',
 )
+register(
+    'LOG_AGGREGATOR_MAX_DISK_USAGE_GB',
+    field_class=fields.IntegerField,
+    default=1,
+    min_value=1,
+    label=_('Maximum disk persistance for external log aggregation (in GB)'),
+    help_text=_('Amount of data to store (in gigabytes) during an outage of '
+                'the external log aggregator (defaults to 1). '
+                'Equivalent to the rsyslogd queue.maxdiskspace setting.'),
+    category=_('Logging'),
+    category_slug='logging',
+)
+register(
+    'LOG_AGGREGATOR_MAX_DISK_USAGE_PATH',
+    field_class=fields.CharField,
+    default='/var/lib/awx',
+    label=_('File system location for rsyslogd disk persistence'),
+    help_text=_('Location to persist logs that should be retried after an outage '
+                'of the external log aggregator (defaults to /var/lib/awx). '
+                'Equivalent to the rsyslogd queue.spoolDirectory setting.'),
+    category=_('Logging'),
+    category_slug='logging',
+)
+register(
+    'LOG_AGGREGATOR_RSYSLOGD_DEBUG',
+    field_class=fields.BooleanField,
+    default=False,
+    label=_('Enable rsyslogd debugging'),
+    help_text=_('Enabled high verbosity debugging for rsyslogd.  '
+                'Useful for debugging connection issues for external log aggregation.'),
+    category=_('Logging'),
+    category_slug='logging',
+)
+
+
+
+register(
+    'AUTOMATION_ANALYTICS_LAST_GATHER',
+    field_class=fields.DateTimeField,
+    label=_('Last gather date for Automation Analytics.'),
+    allow_null=True,
+    category=_('System'),
+    category_slug='system'
+)
+
+
+register(
+    'AUTOMATION_ANALYTICS_GATHER_INTERVAL',
+    field_class=fields.IntegerField,
+    label=_('Automation Analytics Gather Interval'),
+    help_text=_('Interval (in seconds) between data gathering.'),
+    default=14400,	# every 4 hours
+    min_value=1800,	# every 30 minutes
+    category=_('System'),
+    category_slug='system'
+)
 
 
 def logging_validate(serializer, attrs):
@@ -588,4 +856,84 @@ def logging_validate(serializer, attrs):
     return attrs
 
 
+def galaxy_validate(serializer, attrs):
+    """Ansible Galaxy config options have mutual exclusivity rules, these rules
+    are enforced here on serializer validation so that users will not be able
+    to save settings which obviously break all project updates.
+    """
+    prefix = 'PRIMARY_GALAXY_'
+    errors = {}
+
+    def _new_value(setting_name):
+        if setting_name in attrs:
+            return attrs[setting_name]
+        elif not serializer.instance:
+            return ''
+        return getattr(serializer.instance, setting_name, '')
+
+    if not _new_value('PRIMARY_GALAXY_URL'):
+        if _new_value('PUBLIC_GALAXY_ENABLED') is False:
+            msg = _('A URL for Primary Galaxy must be defined before disabling public Galaxy.')
+            # put error in both keys because UI has trouble with errors in toggles
+            for key in ('PRIMARY_GALAXY_URL', 'PUBLIC_GALAXY_ENABLED'):
+                errors.setdefault(key, [])
+                errors[key].append(msg)
+            raise serializers.ValidationError(errors)
+
+    from awx.main.constants import GALAXY_SERVER_FIELDS
+    if not any('{}{}'.format(prefix, subfield.upper()) in attrs for subfield in GALAXY_SERVER_FIELDS):
+        return attrs
+
+    galaxy_data = {}
+    for subfield in GALAXY_SERVER_FIELDS:
+        galaxy_data[subfield] = _new_value('{}{}'.format(prefix, subfield.upper()))
+    if not galaxy_data['url']:
+        for k, v in galaxy_data.items():
+            if v:
+                setting_name = '{}{}'.format(prefix, k.upper())
+                errors.setdefault(setting_name, [])
+                errors[setting_name].append(_(
+                    'Cannot provide field if PRIMARY_GALAXY_URL is not set.'
+                ))
+    for k in GALAXY_SERVER_FIELDS:
+        if galaxy_data[k]:
+            setting_name = '{}{}'.format(prefix, k.upper())
+            if (not serializer.instance) or (not getattr(serializer.instance, setting_name, '')):
+                # new auth is applied, so check if compatible with version
+                from awx.main.utils import get_ansible_version
+                current_version = get_ansible_version()
+                min_version = '2.9'
+                if Version(current_version) < Version(min_version):
+                    errors.setdefault(setting_name, [])
+                    errors[setting_name].append(_(
+                        'Galaxy server settings are not available until Ansible {min_version}, '
+                        'you are running {current_version}.'
+                    ).format(min_version=min_version, current_version=current_version))
+    if (galaxy_data['password'] or galaxy_data['username']) and (galaxy_data['token'] or galaxy_data['auth_url']):
+        for k in ('password', 'username', 'token', 'auth_url'):
+            setting_name = '{}{}'.format(prefix, k.upper())
+            if setting_name in attrs:
+                errors.setdefault(setting_name, [])
+                errors[setting_name].append(_(
+                    'Setting Galaxy token and authentication URL is mutually exclusive with username and password.'
+                ))
+    if bool(galaxy_data['username']) != bool(galaxy_data['password']):
+        msg = _('If authenticating via username and password, both must be provided.')
+        for k in ('username', 'password'):
+            setting_name = '{}{}'.format(prefix, k.upper())
+            errors.setdefault(setting_name, [])
+            errors[setting_name].append(msg)
+    if bool(galaxy_data['token']) != bool(galaxy_data['auth_url']):
+        msg = _('If authenticating via token, both token and authentication URL must be provided.')
+        for k in ('token', 'auth_url'):
+            setting_name = '{}{}'.format(prefix, k.upper())
+            errors.setdefault(setting_name, [])
+            errors[setting_name].append(msg)
+
+    if errors:
+        raise serializers.ValidationError(errors)
+    return attrs
+
+
 register_validate('logging', logging_validate)
+register_validate('jobs', galaxy_validate)

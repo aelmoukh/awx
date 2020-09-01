@@ -20,7 +20,7 @@ from awx.main.models import (
     Role,
     User,
     Team,
-    InstanceGroup,
+    InstanceGroup
 )
 from awx.api.generics import (
     ListCreateAPIView,
@@ -28,6 +28,7 @@ from awx.api.generics import (
     SubListAPIView,
     SubListCreateAttachDetachAPIView,
     SubListAttachDetachAPIView,
+    SubListCreateAPIView,
     ResourceAccessList,
     BaseUsersList,
 )
@@ -35,14 +36,13 @@ from awx.api.generics import (
 from awx.api.serializers import (
     OrganizationSerializer,
     InventorySerializer,
-    ProjectSerializer,
     UserSerializer,
     TeamSerializer,
     ActivityStreamSerializer,
     RoleSerializer,
     NotificationTemplateSerializer,
-    WorkflowJobTemplateSerializer,
     InstanceGroupSerializer,
+    ProjectSerializer, JobTemplateSerializer, WorkflowJobTemplateSerializer
 )
 from awx.api.views.mixin import (
     RelatedJobsPreventDeleteMixin,
@@ -94,7 +94,7 @@ class OrganizationDetail(RelatedJobsPreventDeleteMixin, RetrieveUpdateDestroyAPI
         org_counts['projects'] = Project.accessible_objects(**access_kwargs).filter(
             organization__id=org_id).count()
         org_counts['job_templates'] = JobTemplate.accessible_objects(**access_kwargs).filter(
-            project__organization__id=org_id).count()
+            organization__id=org_id).count()
 
         full_context['related_field_counts'] = {}
         full_context['related_field_counts'][org_id] = org_counts
@@ -116,6 +116,7 @@ class OrganizationUsersList(BaseUsersList):
     serializer_class = UserSerializer
     parent_model = Organization
     relationship = 'member_role.members'
+    ordering = ('username',)
 
 
 class OrganizationAdminsList(BaseUsersList):
@@ -124,23 +125,30 @@ class OrganizationAdminsList(BaseUsersList):
     serializer_class = UserSerializer
     parent_model = Organization
     relationship = 'admin_role.members'
+    ordering = ('username',)
 
 
-class OrganizationProjectsList(SubListCreateAttachDetachAPIView):
+class OrganizationProjectsList(SubListCreateAPIView):
 
     model = Project
     serializer_class = ProjectSerializer
     parent_model = Organization
-    relationship = 'projects'
     parent_key = 'organization'
 
 
-class OrganizationWorkflowJobTemplatesList(SubListCreateAttachDetachAPIView):
+class OrganizationJobTemplatesList(SubListCreateAPIView):
+
+    model = JobTemplate
+    serializer_class = JobTemplateSerializer
+    parent_model = Organization
+    parent_key = 'organization'
+
+
+class OrganizationWorkflowJobTemplatesList(SubListCreateAPIView):
 
     model = WorkflowJobTemplate
     serializer_class = WorkflowJobTemplateSerializer
     parent_model = Organization
-    relationship = 'workflows'
     parent_key = 'organization'
 
 
@@ -176,23 +184,26 @@ class OrganizationNotificationTemplatesAnyList(SubListCreateAttachDetachAPIView)
     model = NotificationTemplate
     serializer_class = NotificationTemplateSerializer
     parent_model = Organization
-    relationship = 'notification_templates_any'
 
 
-class OrganizationNotificationTemplatesErrorList(SubListCreateAttachDetachAPIView):
+class OrganizationNotificationTemplatesStartedList(OrganizationNotificationTemplatesAnyList):
 
-    model = NotificationTemplate
-    serializer_class = NotificationTemplateSerializer
-    parent_model = Organization
+    relationship = 'notification_templates_started'
+
+
+class OrganizationNotificationTemplatesErrorList(OrganizationNotificationTemplatesAnyList):
+
     relationship = 'notification_templates_error'
 
 
-class OrganizationNotificationTemplatesSuccessList(SubListCreateAttachDetachAPIView):
+class OrganizationNotificationTemplatesSuccessList(OrganizationNotificationTemplatesAnyList):
 
-    model = NotificationTemplate
-    serializer_class = NotificationTemplateSerializer
-    parent_model = Organization
     relationship = 'notification_templates_success'
+
+
+class OrganizationNotificationTemplatesApprovalList(OrganizationNotificationTemplatesAnyList):
+
+    relationship = 'notification_templates_approvals'
 
 
 class OrganizationInstanceGroupsList(SubListAttachDetachAPIView):

@@ -14,6 +14,7 @@
         </smart-search>
         <div class="at-List-toolbarAction" ng-show="!vm.isPortalMode && canAdd">
             <button
+                aria-label="{{:: vm.strings.get('list.ADD')}}"
                 type="button"
                 class="at-Button--add"
                 id="button-add"
@@ -53,13 +54,13 @@
                     <div class="at-Row-container">
                         <at-row-item
                             header-value="{{ template.name }}"
-                            header-link="/#/templates/job_template/{{ template.id }}"
+                            header-state="templates.editJobTemplate({job_template_id:{{template.id}}})"
                             header-tag="{{ vm.templateTypes[template.type] }}"
                             ng-if="template.type === 'job_template'">
                         </at-row-item>
                         <at-row-item
                             header-value="{{ template.name }}"
-                            header-link="/#/templates/workflow_job_template/{{ template.id }}"
+                            header-state="templates.editWorkflowJobTemplate({workflow_job_template_id:{{template.id}}})"
                             header-tag="{{ vm.templateTypes[template.type] }}"
                             ng-if="template.type === 'workflow_job_template'">
                         </at-row-item>
@@ -87,6 +88,15 @@
                     </div>
                 </div>
                 <div class="at-Row-container--wrapped">
+                    <at-row-item
+                        label-value="{{:: vm.strings.get('list.ROW_ITEM_LABEL_DESCRIPTION') }}"
+                        value="{{ template.description | sanitize }}">
+                    </at-row-item>
+                    <at-row-item
+                        label-value="{{:: vm.strings.get('list.ROW_ITEM_LABEL_ORGANIZATION') }}"
+                        value="{{ template.summary_fields.organization.name }}"
+                        value-link="/#/organizations/{{ template.summary_fields.organization.id }}">
+                    </at-row-item>
                     <at-row-item
                         label-value="{{:: vm.strings.get('list.ROW_ITEM_LABEL_INVENTORY') }}"
                         value="{{ template.summary_fields.inventory.name }}"

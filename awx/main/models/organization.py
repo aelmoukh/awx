@@ -6,7 +6,6 @@
 # Django
 from django.conf import settings
 from django.db import models
-from django.db.models import Q
 from django.contrib.auth.models import User
 from django.contrib.sessions.models import Session
 from django.utils.timezone import now as tz_now
@@ -51,6 +50,11 @@ class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVi
         default=0,
         help_text=_('Maximum number of hosts allowed to be managed by this organization.'),
     )
+    notification_templates_approvals = models.ManyToManyField(
+        "NotificationTemplate",
+        blank=True,
+        related_name='%(class)s_notification_templates_for_approvals'
+    )
 
     admin_role = ImplicitRoleField(
         parent_role='singleton:' + ROLE_SINGLETON_SYSTEM_ADMINISTRATOR,
@@ -87,7 +91,10 @@ class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVi
                      'execute_role', 'project_admin_role',
                      'inventory_admin_role', 'workflow_admin_role',
                      'notification_admin_role', 'credential_admin_role',
-                     'job_template_admin_role',],
+                     'job_template_admin_role', 'approval_role',],
+    )
+    approval_role = ImplicitRoleField(
+        parent_role='admin_role',
     )
 
 
@@ -98,12 +105,7 @@ class Organization(CommonModel, NotificationFieldsModel, ResourceMixin, CustomVi
     RelatedJobsMixin
     '''
     def _get_related_jobs(self):
-        project_ids = self.projects.all().values_list('id')
-        return UnifiedJob.objects.non_polymorphic().filter(
-            Q(Job___project__in=project_ids) |
-            Q(ProjectUpdate___project__in=project_ids) |
-            Q(InventoryUpdate___inventory_source__inventory__organization=self)
-        )
+        return UnifiedJob.objects.non_polymorphic().filter(organization=self)
 
 
 class Team(CommonModelNameNotUnique, ResourceMixin):
@@ -161,8 +163,8 @@ class Profile(CreatedModifiedModel):
 class UserSessionMembership(BaseModel):
     '''
     A lookup table for API session membership given user. Note, there is a
-    different session created by channels for websockets using the same 
-    underlying model.  
+    different session created by channels for websockets using the same
+    underlying model.
     '''
 
     class Meta:
@@ -177,14 +179,14 @@ class UserSessionMembership(BaseModel):
     created = models.DateTimeField(default=None, editable=False)
 
     @staticmethod
-    def get_memberships_over_limit(user, now=None):
+    def get_memberships_over_limit(user_id, now=None):
         if settings.SESSIONS_PER_USER == -1:
             return []
         if now is None:
             now = tz_now()
         query_set = UserSessionMembership.objects\
             .select_related('session')\
-            .filter(user=user)\
+            .filter(user_id=user_id)\
             .order_by('-created')
         non_expire_memberships = [x for x in query_set if x.session.expire_date > now]
         return non_expire_memberships[settings.SESSIONS_PER_USER:]

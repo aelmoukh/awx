@@ -50,8 +50,6 @@ class TestSwaggerGeneration():
             data.update(response.accepted_renderer.get_customizations() or {})
 
             data['host'] = None
-            if not pytest.config.getoption("--genschema"):
-                data['modified'] = datetime.datetime.utcnow().isoformat()
             data['schemes'] = ['https']
             data['consumes'] = ['application/json']
 
@@ -79,9 +77,13 @@ class TestSwaggerGeneration():
             data['paths'] = revised_paths
             self.__class__.JSON = data
 
-    def test_sanity(self, release):
+    def test_sanity(self, release, request):
         JSON = self.__class__.JSON
         JSON['info']['version'] = release
+
+
+        if not request.config.getoption('--genschema'):
+            JSON['modified'] = datetime.datetime.utcnow().isoformat()
 
         # Make some basic assertions about the rendered JSON so we can
         # be sure it doesn't break across DRF upgrades and view/serializer
@@ -91,7 +93,7 @@ class TestSwaggerGeneration():
         # The number of API endpoints changes over time, but let's just check
         # for a reasonable number here; if this test starts failing, raise/lower the bounds
         paths = JSON['paths']
-        assert 250 < len(paths) < 300
+        assert 250 < len(paths) < 350
         assert list(paths['/api/'].keys()) == ['get']
         assert list(paths['/api/v2/'].keys()) == ['get']
         assert list(sorted(
@@ -105,9 +107,6 @@ class TestSwaggerGeneration():
             'get', 'put', 'patch', 'delete'
         ]
 
-        # Test deprecated paths
-        assert paths['/api/v2/jobs/{id}/extra_credentials/']['get']['deprecated'] is True
-
     @pytest.mark.parametrize('path', [
         '/api/',
         '/api/v2/',
@@ -118,7 +117,7 @@ class TestSwaggerGeneration():
         # hit a couple important endpoints so we always have example data
         get(path, user=admin, expect=200)
 
-    def test_autogen_response_examples(self, swagger_autogen):
+    def test_autogen_response_examples(self, swagger_autogen, request):
         for pattern, node in TestSwaggerGeneration.JSON['paths'].items():
             pattern = pattern.replace('{id}', '[0-9]+')
             pattern = pattern.replace(r'{category_slug}', r'[a-zA-Z0-9\-]+')
@@ -141,7 +140,7 @@ class TestSwaggerGeneration():
                                 for param in node[method].get('parameters'):
                                     if param['in'] == 'body':
                                         node[method]['parameters'].remove(param)
-                                if pytest.config.getoption("--genschema"):
+                                if request.config.getoption("--genschema"):
                                     pytest.skip("In schema generator skipping swagger generator", allow_module_level=True)
                                 else:
                                     node[method].setdefault('parameters', []).append({
@@ -174,6 +173,11 @@ class TestSwaggerGeneration():
             data = re.sub(
                 r'''(\s+"client_id": ")([a-zA-Z0-9]{40})("\,\s*)''',
                 r'\1xxxx\3',
+                data
+            )
+            data = re.sub(
+                r'"action_node": "[^"]+"',
+                '"action_node": "awx"',
                 data
             )
             f.write(data)

@@ -15,6 +15,7 @@ from crum import get_current_user
 
 # AWX
 from awx.main.utils import encrypt_field, parse_yaml_or_json
+from awx.main.constants import CLOUD_PROVIDERS
 
 __all__ = ['prevent_search', 'VarsDictProperty', 'BaseModel', 'CreatedModifiedModel',
            'PasswordFieldsModel', 'PrimordialModel', 'CommonModel',
@@ -50,7 +51,7 @@ PROJECT_UPDATE_JOB_TYPE_CHOICES = [
     (PERM_INVENTORY_CHECK, _('Check')),
 ]
 
-CLOUD_INVENTORY_SOURCES = ['ec2', 'vmware', 'gce', 'azure_rm', 'openstack', 'rhv', 'custom', 'satellite6', 'cloudforms', 'scm', 'tower',]
+CLOUD_INVENTORY_SOURCES = list(CLOUD_PROVIDERS) + ['scm', 'custom']
 
 VERBOSITY_CHOICES = [
     (0, '0 (Normal)'),
@@ -295,7 +296,10 @@ class PrimordialModel(HasEditsMixin, CreatedModifiedModel):
 
     def __init__(self, *args, **kwargs):
         r = super(PrimordialModel, self).__init__(*args, **kwargs)
-        self._prior_values_store = self._get_fields_snapshot()
+        if self.pk:
+            self._prior_values_store = self._get_fields_snapshot()
+        else:
+            self._prior_values_store = {}
         return r
 
     def save(self, *args, **kwargs):
@@ -386,12 +390,11 @@ class NotificationFieldsModel(BaseModel):
         related_name='%(class)s_notification_templates_for_success'
     )
 
-    notification_templates_any = models.ManyToManyField(
+    notification_templates_started = models.ManyToManyField(
         "NotificationTemplate",
         blank=True,
-        related_name='%(class)s_notification_templates_for_any'
+        related_name='%(class)s_notification_templates_for_started'
     )
-
 
 
 def prevent_search(relation):
@@ -404,8 +407,19 @@ def prevent_search(relation):
         sensitive_data = prevent_search(models.CharField(...))
 
     The flag set by this function is used by
-    `awx.api.filters.FieldLookupBackend` to blacklist fields and relations that
+    `awx.api.filters.FieldLookupBackend` to block fields and relations that
     should not be searchable/filterable via search query params
     """
     setattr(relation, '__prevent_search__', True)
+    return relation
+
+
+def accepts_json(relation):
+    """
+    Used to mark a model field as allowing JSON e.g,. JobTemplate.extra_vars
+    This is *mostly* used as a way to provide type hints for certain fields
+    so that HTTP OPTIONS reports the type data we need for the CLI to allow
+    JSON/YAML input.
+    """
+    setattr(relation, '__accepts_json__', True)
     return relation

@@ -1,69 +1,13 @@
 import logging
 
-from django.db.models import Q
+from uuid import uuid4
+
 from django.utils.encoding import smart_text
+from django.utils.timezone import now
 
 from awx.main.utils.common import parse_yaml_or_json
 
 logger = logging.getLogger('awx.main.migrations')
-
-
-def remove_manual_inventory_sources(apps, schema_editor):
-    '''Previously we would automatically create inventory sources after
-    Group creation and we would use the parent Group as our interface for the user.
-    During that process we would create InventorySource that had a source of "manual".
-    '''
-    # TODO: use this in the 3.3 data migrations
-    InventorySource = apps.get_model('main', 'InventorySource')
-    # see models/inventory.py SOURCE_CHOICES - ('', _('Manual'))
-    logger.debug("Removing all Manual InventorySource from database.")
-    InventorySource.objects.filter(source='').delete()
-
-
-def remove_rax_inventory_sources(apps, schema_editor):
-    '''Rackspace inventory sources are not supported since 3.2, remove them.
-    '''
-    InventorySource = apps.get_model('main', 'InventorySource')
-    logger.debug("Removing all Rackspace InventorySource from database.")
-    InventorySource.objects.filter(source='rax').delete()
-
-
-def rename_inventory_sources(apps, schema_editor):
-    '''Rename existing InventorySource entries using the following format.
-    {{ inventory_source.name }} - {{ inventory.module }} - {{ number }}
-    The number will be incremented for each InventorySource for the organization.
-    '''
-    Organization = apps.get_model('main', 'Organization')
-    InventorySource = apps.get_model('main', 'InventorySource')
-
-    for org in Organization.objects.iterator():
-        for i, invsrc in enumerate(InventorySource.objects.filter(Q(inventory__organization=org) |
-                                                                  Q(deprecated_group__inventory__organization=org)).distinct().all()):
-
-            inventory = invsrc.deprecated_group.inventory if invsrc.deprecated_group else invsrc.inventory
-            name = '{0} - {1} - {2}'.format(invsrc.name, inventory.name, i)
-            logger.debug("Renaming InventorySource({0}) {1} -> {2}".format(
-                invsrc.pk, invsrc.name, name
-            ))
-            invsrc.name = name
-            invsrc.save()
-
-
-def remove_inventory_source_with_no_inventory_link(apps, schema_editor):
-    '''If we cannot determine the Inventory for which an InventorySource exists
-    we can safely remove it.
-    '''
-    InventorySource = apps.get_model('main', 'InventorySource')
-    logger.debug("Removing all InventorySource that have no link to an Inventory from database.")
-    InventorySource.objects.filter(Q(inventory__organization=None) & Q(deprecated_group__inventory=None)).delete()
-
-
-def remove_azure_inventory_sources(apps, schema_editor):
-    '''Azure inventory sources are not supported since 3.2, remove them.
-    '''
-    InventorySource = apps.get_model('main', 'InventorySource')
-    logger.debug("Removing all Azure InventorySource from database.")
-    InventorySource.objects.filter(source='azure').delete()
 
 
 def _get_instance_id(from_dict, new_id, default=''):
@@ -145,4 +89,45 @@ def back_out_new_instance_id(apps, source, new_id):
         logger.info('Reverse migrated instance ID for {} hosts imported by {} source'.format(
             modified_ct, source
         ))
+
+
+def create_scm_script_substitute(apps, source):
+    """Only applies for cloudforms in practice, but written generally.
+    Given a source type, this will replace all inventory sources of that type
+    with SCM inventory sources that source the script from Ansible core
+    """
+    # the revision in the Ansible 2.9 stable branch this project will start out as
+    # it can still be updated manually later (but staying within 2.9 branch), if desired
+    ansible_rev = '6f83b9aff42331e15c55a171de0a8b001208c18c'
+    InventorySource = apps.get_model('main', 'InventorySource')
+    ContentType = apps.get_model('contenttypes', 'ContentType')
+    Project = apps.get_model('main', 'Project')
+    if not InventorySource.objects.filter(source=source).exists():
+        logger.debug('No sources of type {} to migrate'.format(source))
+        return
+    proj_name = 'Replacement project for {} type sources - {}'.format(source, uuid4())
+    right_now = now()
+    project = Project.objects.create(
+        name=proj_name,
+        created=right_now,
+        modified=right_now,
+        description='Created by migration',
+        polymorphic_ctype=ContentType.objects.get(model='project'),
+        # project-specific fields
+        scm_type='git',
+        scm_url='https://github.com/ansible/ansible.git',
+        scm_branch='stable-2.9',
+        scm_revision=ansible_rev
+    )
+    ct = 0
+    for inv_src in InventorySource.objects.filter(source=source).iterator():
+        inv_src.source = 'scm'
+        inv_src.source_project = project
+        inv_src.source_path = 'contrib/inventory/{}.py'.format(source)
+        inv_src.scm_last_revision = ansible_rev
+        inv_src.save(update_fields=['source', 'source_project', 'source_path', 'scm_last_revision'])
+        logger.debug('Changed inventory source {} to scm type'.format(inv_src.pk))
+        ct += 1
+    if ct:
+        logger.info('Changed total of {} inventory sources from {} type to scm'.format(ct, source))
 

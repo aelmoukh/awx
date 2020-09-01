@@ -42,10 +42,6 @@ def test_inventory_source_notification_on_cloud_only(get, post, inventory_source
 
     not_is = inventory_source_factory("not_ec2")
 
-    url = reverse('api:inventory_source_notification_templates_any_list', kwargs={'pk': cloud_is.id})
-    response = post(url, dict(id=notification_template.id), u)
-    assert response.status_code == 204
-
     url = reverse('api:inventory_source_notification_templates_success_list', kwargs={'pk': not_is.id})
     response = post(url, dict(id=notification_template.id), u)
     assert response.status_code == 400
@@ -62,6 +58,42 @@ def test_inventory_source_unique_together_with_inv(inventory_factory):
         is2.validate_unique()
     is2 = InventorySource(name='foo', source='file', inventory=inv2)
     is2.validate_unique()
+
+
+@pytest.mark.django_db
+def test_inventory_host_name_unique(scm_inventory, post, admin_user):
+    inv_src = scm_inventory.inventory_sources.first()
+    inv_src.groups.create(name='barfoo', inventory=scm_inventory)
+    resp = post(
+        reverse('api:inventory_hosts_list', kwargs={'pk': scm_inventory.id}),
+        {
+            'name': 'barfoo',
+            'inventory_id': scm_inventory.id,
+        },
+        admin_user, 
+        expect=400
+    )
+
+    assert resp.status_code == 400
+    assert "A Group with that name already exists." in json.dumps(resp.data)
+
+
+@pytest.mark.django_db   
+def test_inventory_group_name_unique(scm_inventory, post, admin_user):
+    inv_src = scm_inventory.inventory_sources.first()
+    inv_src.hosts.create(name='barfoo', inventory=scm_inventory)
+    resp = post(
+        reverse('api:inventory_groups_list', kwargs={'pk': scm_inventory.id}),
+        {
+            'name': 'barfoo',
+            'inventory_id': scm_inventory.id,
+        },
+        admin_user, 
+        expect=400
+    )
+
+    assert resp.status_code == 400
+    assert "A Host with that name already exists." in json.dumps(resp.data)
 
 
 @pytest.mark.parametrize("role_field,expected_status_code", [
@@ -417,7 +449,7 @@ def test_inventory_update_access_called(post, inventory_source, alice, mock_acce
 @pytest.mark.django_db
 def test_inventory_source_vars_prohibition(post, inventory, admin_user):
     with mock.patch('awx.api.serializers.settings') as mock_settings:
-        mock_settings.INV_ENV_VARIABLE_BLACKLIST = ('FOOBAR',)
+        mock_settings.INV_ENV_VARIABLE_BLOCKED = ('FOOBAR',)
         r = post(reverse('api:inventory_source_list'),
                  {'name': 'new inv src', 'source_vars': '{\"FOOBAR\": \"val\"}', 'inventory': inventory.pk},
                  admin_user, expect=400)
@@ -603,9 +635,9 @@ class TestControlledBySCM:
         delete(inv_src.get_absolute_url(), admin_user, expect=204)
         assert scm_inventory.inventory_sources.count() == 0
 
-    def test_adding_inv_src_ok(self, post, scm_inventory, admin_user):
-        post(reverse('api:inventory_inventory_sources_list', kwargs={'version': 'v2', 'pk': scm_inventory.id}),
-             {'name': 'new inv src', 'update_on_project_update': False, 'source': 'scm', 'overwrite_vars': True},
+    def test_adding_inv_src_ok(self, post, scm_inventory, project, admin_user):
+        post(reverse('api:inventory_inventory_sources_list', kwargs={'pk': scm_inventory.id}),
+             {'name': 'new inv src', 'source_project': project.pk, 'update_on_project_update': False, 'source': 'scm', 'overwrite_vars': True},
              admin_user, expect=201)
 
     def test_adding_inv_src_prohibited(self, post, scm_inventory, project, admin_user):
@@ -615,7 +647,7 @@ class TestControlledBySCM:
 
     def test_two_update_on_project_update_inv_src_prohibited(self, patch, scm_inventory, factory_scm_inventory, project, admin_user):
         scm_inventory2 = factory_scm_inventory(name="scm_inventory2")
-        res = patch(reverse('api:inventory_source_detail', kwargs={'version': 'v2', 'pk': scm_inventory2.id}),
+        res = patch(reverse('api:inventory_source_detail', kwargs={'pk': scm_inventory2.id}),
                     {'update_on_project_update': True,},
                     admin_user, expect=400)
         content = json.loads(res.content)

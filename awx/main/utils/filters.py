@@ -9,15 +9,16 @@ from pyparsing import (
     ParseException,
 )
 import logging
-from logging import Filter, _nameToLevel
+from logging import Filter
 
 from django.apps import apps
 from django.db import models
 from django.conf import settings
 
+from awx.main.constants import LOGGER_BLOCKLIST
 from awx.main.utils.common import get_search_fields
 
-__all__ = ['SmartFilter', 'ExternalLoggerEnabled']
+__all__ = ['SmartFilter', 'ExternalLoggerEnabled', 'DynamicLevelFilter']
 
 logger = logging.getLogger('awx.main.utils')
 
@@ -47,21 +48,18 @@ class FieldFromSettings(object):
             instance.settings_override[self.setting_name] = value
 
 
+def record_is_blocked(record):
+    """Given a log record, return True if it is considered to be
+    blocked, return False if not
+    """
+    for logger_name in LOGGER_BLOCKLIST:
+        if record.name.startswith(logger_name):
+            return True
+    return False
+
+
 class ExternalLoggerEnabled(Filter):
 
-    # Prevents recursive logging loops from swamping the server
-    LOGGER_BLACKLIST = (
-        # loggers that may be called in process of emitting a log
-        'awx.main.utils.handlers',
-        'awx.main.utils.formatters',
-        'awx.main.utils.filters',
-        'awx.main.utils.encryption',
-        'awx.main.utils.log',
-        # loggers that may be called getting logging settings
-        'awx.conf'
-    )
-
-    lvl = FieldFromSettings('LOG_AGGREGATOR_LEVEL')
     enabled_loggers = FieldFromSettings('LOG_AGGREGATOR_LOGGERS')
     enabled_flag = FieldFromSettings('LOG_AGGREGATOR_ENABLED')
 
@@ -75,24 +73,18 @@ class ExternalLoggerEnabled(Filter):
             setattr(self, field_name, field_value)
 
     def filter(self, record):
-        """
-        Uses the database settings to determine if the current
-        external log configuration says that this particular record
-        should be sent to the external log aggregator
+        """Filters out all log records if LOG_AGGREGATOR_ENABLED is False
+        or if the particular logger is not in LOG_AGGREGATOR_LOGGERS
+        should only be used for the external logger
 
         False - should not be logged
         True - should be logged
         """
-        # Logger exceptions
-        for logger_name in self.LOGGER_BLACKLIST:
-            if record.name.startswith(logger_name):
-                return False
+        # Do not send exceptions to external logger
+        if record_is_blocked(record):
+            return False
         # General enablement
         if not self.enabled_flag:
-            return False
-
-        # Level enablement
-        if record.levelno < _nameToLevel[self.lvl]:
             return False
 
         # Logger type enablement
@@ -108,6 +100,24 @@ class ExternalLoggerEnabled(Filter):
             else:
                 base_name = record.name
             return bool(base_name in loggers)
+
+
+class DynamicLevelFilter(Filter):
+
+    def filter(self, record):
+        """Filters out logs that have a level below the threshold defined
+        by the databse setting LOG_AGGREGATOR_LEVEL
+        """
+        if record_is_blocked(record):
+            # Fine to write denied loggers to file, apply default filtering level
+            cutoff_level = logging.WARNING
+        else:
+            try:
+                cutoff_level = logging._nameToLevel[settings.LOG_AGGREGATOR_LEVEL]
+            except Exception:
+                cutoff_level = logging.WARNING
+
+        return bool(record.levelno >= cutoff_level)
 
 
 def string_to_type(t):
@@ -169,7 +179,7 @@ class SmartFilter(object):
               pyparsing do the heavy lifting.
         TODO: separate django filter requests from our custom json filter
               request so we don't process the key any. This could be
-              accomplished using a whitelist or introspecting the
+              accomplished using an allowed list or introspecting the
               relationship refered to to see if it's a jsonb type.
         '''
         def _json_path_to_contains(self, k, v):

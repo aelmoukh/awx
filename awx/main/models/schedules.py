@@ -119,10 +119,11 @@ class Schedule(PrimordialModel, LaunchTimeConfig):
                 tzinfo = r._dtstart.tzinfo
                 if tzinfo is utc:
                     return 'UTC'
-                fname = tzinfo._filename
-                for zone in all_zones:
-                    if fname.endswith(zone):
-                        return zone
+                fname = getattr(tzinfo, '_filename', None)
+                if fname:
+                    for zone in all_zones:
+                        if fname.endswith(zone):
+                            return zone
         logger.warn('Could not detect valid zoneinfo for {}'.format(self.rrule))
         return ''
 
@@ -190,7 +191,7 @@ class Schedule(PrimordialModel, LaunchTimeConfig):
         return rrule
 
     @classmethod
-    def rrulestr(cls, rrule, **kwargs):
+    def rrulestr(cls, rrule, fast_forward=True, **kwargs):
         """
         Apply our own custom rrule parsing requirements
         """
@@ -204,11 +205,17 @@ class Schedule(PrimordialModel, LaunchTimeConfig):
                     'A valid TZID must be provided (e.g., America/New_York)'
                 )
 
-        if 'MINUTELY' in rrule or 'HOURLY' in rrule:
+        if fast_forward and ('MINUTELY' in rrule or 'HOURLY' in rrule):
             try:
                 first_event = x[0]
-                if first_event < now() - datetime.timedelta(days=365 * 5):
-                    raise ValueError('RRULE values with more than 1000 events are not allowed.')
+                if first_event < now():
+                    # hourly/minutely rrules with far-past DTSTART values
+                    # are *really* slow to precompute
+                    # start *from* one week ago to speed things up drastically
+                    dtstart = x._rrule[0]._dtstart.strftime(':%Y%m%dT')
+                    new_start = (now() - datetime.timedelta(days=7)).strftime(':%Y%m%dT')
+                    new_rrule = rrule.replace(dtstart, new_start)
+                    return Schedule.rrulestr(new_rrule, fast_forward=False)
             except IndexError:
                 pass
         return x
@@ -227,15 +234,23 @@ class Schedule(PrimordialModel, LaunchTimeConfig):
         job_kwargs['_eager_fields'] = {'launch_type': 'scheduled', 'schedule': self}
         return job_kwargs
 
-    def update_computed_fields(self):
-        future_rs = Schedule.rrulestr(self.rrule)
-        next_run_actual = future_rs.after(now())
+    def update_computed_fields_no_save(self):
+        affects_fields = ['next_run', 'dtstart', 'dtend']
+        starting_values = {}
+        for field_name in affects_fields:
+            starting_values[field_name] = getattr(self, field_name)
 
-        if next_run_actual is not None:
-            if not datetime_exists(next_run_actual):
-                # skip imaginary dates, like 2:30 on DST boundaries
-                next_run_actual = future_rs.after(next_run_actual)
-            next_run_actual = next_run_actual.astimezone(pytz.utc)
+        future_rs = Schedule.rrulestr(self.rrule)
+
+        if self.enabled:
+            next_run_actual = future_rs.after(now())
+            if next_run_actual is not None:
+                if not datetime_exists(next_run_actual):
+                    # skip imaginary dates, like 2:30 on DST boundaries
+                    next_run_actual = future_rs.after(next_run_actual)
+                next_run_actual = next_run_actual.astimezone(pytz.utc)
+        else:
+            next_run_actual = None
 
         self.next_run = next_run_actual
         try:
@@ -248,11 +263,38 @@ class Schedule(PrimordialModel, LaunchTimeConfig):
                 self.dtend = future_rs[-1].astimezone(pytz.utc)
             except IndexError:
                 self.dtend = None
+
+        changed = any(getattr(self, field_name) != starting_values[field_name] for field_name in affects_fields)
+        return changed
+
+    def update_computed_fields(self):
+        changed = self.update_computed_fields_no_save()
+        if not changed:
+            return
         emit_channel_notification('schedules-changed', dict(id=self.id, group_name='schedules'))
+        # Must save self here before calling unified_job_template computed fields
+        # in order for that method to be correct
+        # by adding modified to update fields, we avoid updating modified time
+        super(Schedule, self).save(update_fields=['next_run', 'dtstart', 'dtend', 'modified'])
         with ignore_inventory_computed_fields():
             self.unified_job_template.update_computed_fields()
 
     def save(self, *args, **kwargs):
-        self.update_computed_fields()
         self.rrule = Schedule.coerce_naive_until(self.rrule)
+        changed = self.update_computed_fields_no_save()
+        if changed and 'update_fields' in kwargs:
+            for field_name in ['next_run', 'dtstart', 'dtend']:
+                if field_name not in kwargs['update_fields']:
+                    kwargs['update_fields'].append(field_name)
         super(Schedule, self).save(*args, **kwargs)
+        if changed:
+            with ignore_inventory_computed_fields():
+                self.unified_job_template.update_computed_fields()
+
+    def delete(self, *args, **kwargs):
+        ujt = self.unified_job_template
+        r = super(Schedule, self).delete(*args, **kwargs)
+        if ujt:
+            with ignore_inventory_computed_fields():
+                ujt.update_computed_fields()
+        return r

@@ -17,7 +17,10 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 
+import requests
+
 from awx.api.generics import APIView
+from awx.conf.registry import settings_registry
 from awx.main.ha import is_ha_environment
 from awx.main.utils import (
     get_awx_version,
@@ -25,7 +28,7 @@ from awx.main.utils import (
     get_custom_venv_choices,
     to_python_boolean,
 )
-from awx.api.versioning import reverse, get_request_version, drf_reverse
+from awx.api.versioning import reverse, drf_reverse
 from awx.conf.license import get_license
 from awx.main.constants import PRIVILEGE_ESCALATION_METHODS
 from awx.main.models import (
@@ -35,6 +38,7 @@ from awx.main.models import (
     InstanceGroup,
     JobTemplate,
 )
+from awx.main.utils import set_environ
 
 logger = logging.getLogger('awx.api.views.root')
 
@@ -42,7 +46,7 @@ logger = logging.getLogger('awx.api.views.root')
 class ApiRootView(APIView):
 
     permission_classes = (AllowAny,)
-    view_name = _('REST API')
+    name = _('REST API')
     versioning_class = None
     swagger_topic = 'Versioning'
 
@@ -50,22 +54,22 @@ class ApiRootView(APIView):
     def get(self, request, format=None):
         ''' List supported API versions '''
 
-        v1 = reverse('api:api_v1_root_view', kwargs={'version': 'v1'})
         v2 = reverse('api:api_v2_root_view', kwargs={'version': 'v2'})
         data = OrderedDict()
         data['description'] = _('AWX REST API')
         data['current_version'] = v2
-        data['available_versions'] = dict(v1 = v1, v2 = v2)
+        data['available_versions'] = dict(v2 = v2)
         data['oauth2'] = drf_reverse('api:oauth_authorization_root_view')
         data['custom_logo'] = settings.CUSTOM_LOGO
         data['custom_login_info'] = settings.CUSTOM_LOGIN_INFO
+        data['login_redirect_override'] = settings.LOGIN_REDIRECT_OVERRIDE
         return Response(data)
 
 
 class ApiOAuthAuthorizationRootView(APIView):
 
     permission_classes = (AllowAny,)
-    view_name = _("API OAuth 2 Authorization Root")
+    name = _("API OAuth 2 Authorization Root")
     versioning_class = None
     swagger_topic = 'Authentication'
 
@@ -85,10 +89,10 @@ class ApiVersionRootView(APIView):
     def get(self, request, format=None):
         ''' List top level resources '''
         data = OrderedDict()
-        data['ping'] = reverse('api:api_v1_ping_view', request=request)
+        data['ping'] = reverse('api:api_v2_ping_view', request=request)
         data['instances'] = reverse('api:instance_list', request=request)
         data['instance_groups'] = reverse('api:instance_group_list', request=request)
-        data['config'] = reverse('api:api_v1_config_view', request=request)
+        data['config'] = reverse('api:api_v2_config_view', request=request)
         data['settings'] = reverse('api:setting_category_list', request=request)
         data['me'] = reverse('api:user_me_list', request=request)
         data['dashboard'] = reverse('api:dashboard_view', request=request)
@@ -98,12 +102,11 @@ class ApiVersionRootView(APIView):
         data['project_updates'] = reverse('api:project_update_list', request=request)
         data['teams'] = reverse('api:team_list', request=request)
         data['credentials'] = reverse('api:credential_list', request=request)
-        if get_request_version(request) > 1:
-            data['credential_types'] = reverse('api:credential_type_list', request=request)
-            data['credential_input_sources'] = reverse('api:credential_input_source_list', request=request)
-            data['applications'] = reverse('api:o_auth2_application_list', request=request)
-            data['tokens'] = reverse('api:o_auth2_token_list', request=request)
-            data['metrics'] = reverse('api:metrics_view', request=request)
+        data['credential_types'] = reverse('api:credential_type_list', request=request)
+        data['credential_input_sources'] = reverse('api:credential_input_source_list', request=request)
+        data['applications'] = reverse('api:o_auth2_application_list', request=request)
+        data['tokens'] = reverse('api:o_auth2_token_list', request=request)
+        data['metrics'] = reverse('api:metrics_view', request=request)
         data['inventory'] = reverse('api:inventory_list', request=request)
         data['inventory_scripts'] = reverse('api:inventory_script_list', request=request)
         data['inventory_sources'] = reverse('api:inventory_source_list', request=request)
@@ -126,26 +129,23 @@ class ApiVersionRootView(APIView):
         data['activity_stream'] = reverse('api:activity_stream_list', request=request)
         data['workflow_job_templates'] = reverse('api:workflow_job_template_list', request=request)
         data['workflow_jobs'] = reverse('api:workflow_job_list', request=request)
+        data['workflow_approvals'] = reverse('api:workflow_approval_list', request=request)
         data['workflow_job_template_nodes'] = reverse('api:workflow_job_template_node_list', request=request)
         data['workflow_job_nodes'] = reverse('api:workflow_job_node_list', request=request)
         return Response(data)
 
 
-class ApiV1RootView(ApiVersionRootView):
-    view_name = _('Version 1')
-
-
 class ApiV2RootView(ApiVersionRootView):
-    view_name = _('Version 2')
+    name = _('Version 2')
 
 
-class ApiV1PingView(APIView):
+class ApiV2PingView(APIView):
     """A simple view that reports very basic information about this
     instance, which is acceptable to be public information.
     """
     permission_classes = (AllowAny,)
     authentication_classes = ()
-    view_name = _('Ping')
+    name = _('Ping')
     swagger_topic = 'System Configuration'
 
     def get(self, request, format=None):
@@ -167,21 +167,66 @@ class ApiV1PingView(APIView):
                                               capacity=instance.capacity, version=instance.version))
             sorted(response['instances'], key=operator.itemgetter('node'))
         response['instance_groups'] = []
-        for instance_group in InstanceGroup.objects.all():
+        for instance_group in InstanceGroup.objects.prefetch_related('instances'):
             response['instance_groups'].append(dict(name=instance_group.name,
                                                     capacity=instance_group.capacity,
                                                     instances=[x.hostname for x in instance_group.instances.all()]))
         return Response(response)
 
 
-class ApiV1ConfigView(APIView):
+class ApiV2SubscriptionView(APIView):
 
     permission_classes = (IsAuthenticated,)
-    view_name = _('Configuration')
+    name = _('Configuration')
     swagger_topic = 'System Configuration'
 
     def check_permissions(self, request):
-        super(ApiV1ConfigView, self).check_permissions(request)
+        super(ApiV2SubscriptionView, self).check_permissions(request)
+        if not request.user.is_superuser and request.method.lower() not in {'options', 'head'}:
+            self.permission_denied(request)  # Raises PermissionDenied exception.
+
+    def post(self, request):
+        from awx.main.utils.common import get_licenser
+        data = request.data.copy()
+        if data.get('rh_password') == '$encrypted$':
+            data['rh_password'] = settings.REDHAT_PASSWORD
+        try:
+            user, pw = data.get('rh_username'), data.get('rh_password')
+            with set_environ(**settings.AWX_TASK_ENV):
+                validated = get_licenser().validate_rh(user, pw)
+            if user:
+                settings.REDHAT_USERNAME = data['rh_username']
+            if pw:
+                settings.REDHAT_PASSWORD = data['rh_password']
+        except Exception as exc:
+            msg = _("Invalid License")
+            if (
+                isinstance(exc, requests.exceptions.HTTPError) and
+                getattr(getattr(exc, 'response', None), 'status_code', None) == 401
+            ):
+                msg = _("The provided credentials are invalid (HTTP 401).")
+            elif isinstance(exc, requests.exceptions.ProxyError):
+                msg = _("Unable to connect to proxy server.")
+            elif isinstance(exc, requests.exceptions.ConnectionError):
+                msg = _("Could not connect to subscription service.")
+            elif isinstance(exc, (ValueError, OSError)) and exc.args:
+                msg = exc.args[0]
+            else:
+                logger.exception(smart_text(u"Invalid license submitted."),
+                                 extra=dict(actor=request.user.username))
+            return Response({"error": msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(validated)
+
+
+class ApiV2ConfigView(APIView):
+
+    permission_classes = (IsAuthenticated,)
+    name = _('Configuration')
+    swagger_topic = 'System Configuration'
+
+    def check_permissions(self, request):
+        super(ApiV2ConfigView, self).check_permissions(request)
         if not request.user.is_superuser and request.method.lower() not in {'options', 'head', 'get'}:
             self.permission_denied(request)  # Raises PermissionDenied exception.
 
@@ -265,7 +310,8 @@ class ApiV1ConfigView(APIView):
         # If the license is valid, write it to the database.
         if license_data_validated['valid_key']:
             settings.LICENSE = license_data
-            settings.TOWER_URL_BASE = "{}://{}".format(request.scheme, request.get_host())
+            if not settings_registry.is_setting_read_only('TOWER_URL_BASE'):
+                settings.TOWER_URL_BASE = "{}://{}".format(request.scheme, request.get_host())
             return Response(license_data_validated)
 
         logger.warning(smart_text(u"Invalid license submitted."),

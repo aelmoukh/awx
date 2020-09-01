@@ -10,19 +10,22 @@ export default ['Rest', 'Wait',
     'notification_template',
     '$scope', '$state', 'GetChoices', 'CreateSelect2', 'Empty',
     'NotificationsTypeChange', 'ParseTypeChange', 'i18n',
+    'MessageUtils', '$filter',
     function(
         Rest, Wait,
         NotificationsFormObject, ProcessErrors, GetBasePath,
         GenerateForm,
         notification_template,
         $scope, $state, GetChoices, CreateSelect2, Empty,
-        NotificationsTypeChange, ParseTypeChange, i18n
+        NotificationsTypeChange, ParseTypeChange, i18n,
+        MessageUtils, $filter
     ) {
         var generator = GenerateForm,
             id = notification_template.id,
             form = NotificationsFormObject,
-            master = {},
-            url = GetBasePath('notification_templates');
+            main = {},
+            url = GetBasePath('notification_templates'),
+            defaultMessages = {};
 
         init();
 
@@ -34,6 +37,12 @@ export default ['Rest', 'Wait',
                     $scope.canAdd = false;
                 }
             });
+
+            Rest.setUrl(GetBasePath('notification_templates'));
+            Rest.options()
+                .then(({data}) => {
+                    defaultMessages = data.actions.GET.messages;
+                });
 
             GetChoices({
                 scope: $scope,
@@ -64,52 +73,51 @@ export default ['Rest', 'Wait',
                     for (fld in form.fields) {
                         if (data[fld]) {
                             $scope[fld] = data[fld];
-                            master[fld] = data[fld];
+                            main[fld] = data[fld];
                         }
 
-                        if(form.fields[fld].type === 'radio_group') {
-                            if(data.notification_configuration.use_ssl === true){
-                                $scope.email_options = "use_ssl";
-                                master.email_options = "use_ssl";
-                                $scope.use_ssl = true;
-                                master.use_ssl = true;
-                                $scope.use_tls = false;
-                                master.use_tls = false;
-                            }
-                            if(data.notification_configuration.use_tls === true){
-                                $scope.email_options = "use_tls";
-                                master.email_options = "use_tls";
-                                $scope.use_ssl = false;
-                                master.use_ssl = false;
-                                $scope.use_tls = true;
-                                master.use_tls = true;
-                            }
+                        if(data.notification_configuration.use_ssl === true){
+                            $scope.email_options = "use_ssl";
+                            main.email_options = "use_ssl";
+                            $scope.use_ssl = true;
+                            main.use_ssl = true;
+                            $scope.use_tls = false;
+                            main.use_tls = false;
                         }
-                        else {
-                            if (data.notification_configuration.timeout === null ||
-                              !data.notification_configuration.timeout){
-                                $scope.timeout = 30;
-                            }
-                            if (data.notification_configuration[fld]) {
-                                $scope[fld] = data.notification_configuration[fld];
-                                master[fld] = data.notification_configuration[fld];
 
-                                if (form.fields[fld].type === 'textarea') {
-                                    if (form.fields[fld].name === 'headers') {
-                                        $scope[fld] = JSON.stringify($scope[fld], null, 2);
-                                    } else {
-                                        $scope[fld] = $scope[fld].join('\n');
-                                    }
+                        if(data.notification_configuration.use_tls === true){
+                            $scope.email_options = "use_tls";
+                            main.email_options = "use_tls";
+                            $scope.use_ssl = false;
+                            main.use_ssl = false;
+                            $scope.use_tls = true;
+                            main.use_tls = true;
+                        }
+
+                        if (data.notification_configuration.timeout === null ||
+                            !data.notification_configuration.timeout){
+                            $scope.timeout = 30;
+                        }
+
+                        if (data.notification_configuration[fld]) {
+                            $scope[fld] = data.notification_configuration[fld];
+                            main[fld] = data.notification_configuration[fld];
+
+                            if (form.fields[fld].type === 'textarea') {
+                                if (form.fields[fld].name === 'headers') {
+                                    $scope[fld] = JSON.stringify($scope[fld], null, 2);
+                                } else {
+                                    $scope[fld] = $scope[fld].join('\n');
                                 }
                             }
+                        }
 
-                            if (form.fields[fld].sourceModel && data.summary_fields &&
-                                data.summary_fields[form.fields[fld].sourceModel]) {
-                                $scope[form.fields[fld].sourceModel + '_' + form.fields[fld].sourceField] =
-                                    data.summary_fields[form.fields[fld].sourceModel][form.fields[fld].sourceField];
-                                master[form.fields[fld].sourceModel + '_' + form.fields[fld].sourceField] =
-                                    data.summary_fields[form.fields[fld].sourceModel][form.fields[fld].sourceField];
-                            }
+                        if (form.fields[fld].sourceModel && data.summary_fields &&
+                            data.summary_fields[form.fields[fld].sourceModel]) {
+                            $scope[form.fields[fld].sourceModel + '_' + form.fields[fld].sourceField] =
+                                data.summary_fields[form.fields[fld].sourceModel][form.fields[fld].sourceField];
+                            main[form.fields[fld].sourceModel + '_' + form.fields[fld].sourceField] =
+                                data.summary_fields[form.fields[fld].sourceModel][form.fields[fld].sourceField];
                         }
                     }
                     data.notification_type = (Empty(data.notification_type)) ? '' : data.notification_type;
@@ -120,9 +128,18 @@ export default ['Rest', 'Wait',
                         }
                     }
 
-                    master.notification_type = $scope.notification_type;
+                    main.notification_type = $scope.notification_type;
                     CreateSelect2({
                         element: '#notification_template_notification_type',
+                        multiple: false
+                    });
+                    
+                    $scope.emailOptions = [
+                        {'id': 'use_tls', 'name': i18n._('Use TLS')},
+                        {'id': 'use_ssl', 'name': i18n._('Use SSL')},
+                    ];
+                    CreateSelect2({
+                        element: '#notification_template_email_options',
                         multiple: false
                     });
 
@@ -138,6 +155,16 @@ export default ['Rest', 'Wait',
                         element: '#notification_template_color',
                         multiple: false
                     });
+
+                    $scope.httpMethodChoices = [
+                        {'id': 'POST', 'name': i18n._('POST')},
+                        {'id': 'PUT', 'name': i18n._('PUT')},
+                    ];
+                    CreateSelect2({
+                        element: '#notification_template_http_method',
+                        multiple: false,
+                    });
+
                     NotificationsTypeChange.getDetailFields($scope.notification_type.value).forEach(function(field) {
                         $scope[field[0]] = field[1];
                     });
@@ -147,12 +174,17 @@ export default ['Rest', 'Wait',
                     if (!$scope.headers) {
                         $scope.headers = "{\n}";
                     }
+
                     ParseTypeChange({
                         scope: $scope,
                         parse_variable: 'parse_type',
                         variable: 'headers',
                         field_id: 'notification_template_headers',
+                        readOnly: !$scope.notification_template.summary_fields.user_capabilities.edit
                     });
+
+                    MessageUtils.setMessagesOnScope($scope, data.messages, defaultMessages);
+
                     Wait('stop');
                 })
                 .catch(({data, status}) => {
@@ -163,11 +195,9 @@ export default ['Rest', 'Wait',
                 });
         });
 
-
-
         $scope.$watch('headers', function validate_headers(str) {
             try {
-                let headers = JSON.parse(str);
+                const headers = typeof str === 'string' ? JSON.parse(str) : str;
                 if (_.isObject(headers) && !_.isArray(headers)) {
                     let valid = true;
                     for (let k in headers) {
@@ -221,31 +251,32 @@ export default ['Rest', 'Wait',
                 parse_variable: 'parse_type',
                 variable: 'headers',
                 field_id: 'notification_template_headers',
+                readOnly: !$scope.notification_template.summary_fields.user_capabilities.edit
             });
         };
 
-        $scope.emailOptionsChange = function () {
-            if ($scope.email_options === 'use_ssl') {
-                if ($scope.use_ssl) {
-                    $scope.email_options = null;
-                    $scope.use_ssl = false;
-                    return;
-                }
-
-                $scope.use_ssl = true;
-                $scope.use_tls = false;
+        $scope.$watch('customize_messages', (value) => {
+            if (value) {
+                $scope.$broadcast('reset-code-mirror', {
+                    customize_messages: $scope.customize_messages,
+                });
             }
-            else if ($scope.email_options === 'use_tls') {
-                if ($scope.use_tls) {
-                    $scope.email_options = null;
-                    $scope.use_tls = false;
-                    return;
-                }
-
-                $scope.use_ssl = false;
-                $scope.use_tls = true;
-            }
+        });
+        $scope.toggleForm = function(key) {
+            $scope[key] = !$scope[key];
         };
+        $scope.$watch('notification_type', (newValue, oldValue = {}) => {
+            if (newValue) {
+                MessageUtils.updateDefaultsOnScope(
+                  $scope,
+                  defaultMessages[oldValue.value],
+                  defaultMessages[newValue.value]
+                );
+                $scope.$broadcast('reset-code-mirror', {
+                    customize_messages: $scope.customize_messages,
+                });
+            }
+        });
 
         $scope.formSave = function() {
             var params,
@@ -256,6 +287,7 @@ export default ['Rest', 'Wait',
                 "name": $scope.name,
                 "description": $scope.description,
                 "organization": $scope.organization,
+                "messages": MessageUtils.getMessagesObj($scope, defaultMessages),
                 "notification_type": v,
                 "notification_configuration": {}
             };
@@ -263,7 +295,9 @@ export default ['Rest', 'Wait',
             function processValue(value, i, field) {
                 if (field.type === 'textarea') {
                     if (field.name === 'headers') {
-                        $scope[i] = JSON.parse($scope[i]);
+                        if (typeof $scope[i] === 'string') {
+                            $scope[i] = JSON.parse($scope[i]);
+                        }
                     }
                     else if (field.name === 'annotation_tags' && $scope.notification_type.value === "grafana" && value === null) {
                         $scope[i] = null;
@@ -278,7 +312,12 @@ export default ['Rest', 'Wait',
                 if (field.type === 'number') {
                     $scope[i] = Number($scope[i]);
                 }
-                if (i === "username" && $scope.notification_type.value === "email" && (value === null || value === undefined)) {
+                const isUsernameIncluded = (
+                  $scope.notification_type.value === 'email' ||
+                  $scope.notification_type.value === 'webhook'
+                );
+                if (i === "username" && isUsernameIncluded &&
+                  (value === null || value === undefined)) {
                     $scope[i] = "";
                 }
                 if (field.type === 'sensitive' && (value === null || value === undefined)) {
@@ -291,10 +330,10 @@ export default ['Rest', 'Wait',
                 .filter(i => (form.fields[i].ngShow && form.fields[i].ngShow.indexOf(v) > -1))
                 .map(i => [i, processValue($scope[i], i, form.fields[i])]));
 
-                delete params.notification_configuration.email_options;
+            delete params.notification_configuration.email_options;
 
-                params.notification_configuration.use_ssl = Boolean($scope.use_ssl);
-                params.notification_configuration.use_tls = Boolean($scope.use_tls);
+            params.notification_configuration.use_ssl = $scope.email_options === 'use_ssl';
+            params.notification_configuration.use_tls = $scope.email_options === 'use_tls';            
 
             Wait('start');
             Rest.setUrl(url + id + '/');
@@ -303,10 +342,14 @@ export default ['Rest', 'Wait',
                     $state.go('notifications', {}, { reload: true });
                     Wait('stop');
                 })
-                .catch(({data, status}) => {
+                .catch(({ data, status }) => {
+                    let description = 'PUT returned status: ' + status;
+                    if (data && data.messages && data.messages.length > 0) {
+                        description = _.uniq(data.messages).join(', ');
+                    }
                     ProcessErrors($scope, data, status, form, {
                         hdr: 'Error!',
-                        msg: 'Failed to add new notification template. POST returned status: ' + status
+                        msg: $filter('sanitize')('Failed to update notifier. ' + description + '.')
                     });
                 });
         };

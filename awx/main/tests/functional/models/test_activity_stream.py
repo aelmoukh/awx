@@ -12,6 +12,7 @@ from awx.main.models import (
     CredentialType,
     Inventory,
     InventorySource,
+    Project,
     User
 )
 
@@ -99,8 +100,8 @@ class TestRolesAssociationEntries:
             ).count() == 1, 'In loop %s' % i
 
     def test_model_associations_are_recorded(self, organization):
-        proj1 = organization.projects.create(name='proj1')
-        proj2 = organization.projects.create(name='proj2')
+        proj1 = Project.objects.create(name='proj1', organization=organization)
+        proj2 = Project.objects.create(name='proj2', organization=organization)
         proj2.use_role.parents.add(proj1.admin_role)
         assert ActivityStream.objects.filter(role=proj1.admin_role, project=proj2).count() == 1
 
@@ -277,3 +278,34 @@ def test_saved_passwords_hidden_activity(workflow_job_template, job_template_wit
     changes = json.loads(entry.changes)
     assert 'survey_passwords' not in changes
     assert json.loads(changes['extra_data'])['bbbb'] == '$encrypted$'
+
+
+@pytest.mark.django_db
+def test_cluster_node_recorded(inventory, project):
+    jt = JobTemplate.objects.create(name='testjt', inventory=inventory, project=project)
+    with mock.patch('awx.main.models.activity_stream.settings.CLUSTER_HOST_ID', 'foo_host'):
+        job = jt.create_unified_job()
+    entry = ActivityStream.objects.filter(job=job).first()
+    assert entry.action_node == 'foo_host'
+
+
+@pytest.mark.django_db
+def test_cluster_node_long_node_name(inventory, project):
+    jt = JobTemplate.objects.create(name='testjt', inventory=inventory, project=project)
+    with mock.patch('awx.main.models.activity_stream.settings.CLUSTER_HOST_ID', 'f' * 700):
+        job = jt.create_unified_job()
+    # node name is very long, we just want to make sure it does not error
+    entry = ActivityStream.objects.filter(job=job).first()
+    assert entry.action_node.startswith('ffffff')
+
+
+@pytest.mark.django_db
+def test_credential_defaults_idempotency():
+    CredentialType.setup_tower_managed_defaults()
+    old_inputs = CredentialType.objects.get(name='Ansible Tower', kind='cloud').inputs
+    prior_count = ActivityStream.objects.count()
+    # this is commonly re-ran in migrations, and no changes should be shown
+    # because inputs and injectors are not actually tracked in the database
+    CredentialType.setup_tower_managed_defaults()
+    assert CredentialType.objects.get(name='Ansible Tower', kind='cloud').inputs == old_inputs
+    assert ActivityStream.objects.count() == prior_count

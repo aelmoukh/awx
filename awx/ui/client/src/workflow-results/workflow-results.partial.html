@@ -23,6 +23,7 @@
 
                         <!-- RELAUNCH ACTION -->
                         <button class="List-actionButton"
+                            aria-label="{{'Relaunch job'|translate}}"
                             data-placement="top"
                             mode="all"
                             ng-click="relaunchJob()"
@@ -35,6 +36,7 @@
                         <!-- CANCEL ACTION -->
                         <button class="List-actionButton
                                 List-actionButton--delete"
+                            aria-label="{{'Cancel job'|translate}}"
                             data-placement="top"
                             ng-click="cancelJob()"
                             ng-show="workflow.status == 'running' ||
@@ -47,6 +49,7 @@
                         <!-- DELETE ACTION -->
                         <button class="List-actionButton
                                 List-actionButton--delete"
+                            aria-label="{{'Delete job'|translate}}"
                             data-placement="top"
                             ng-click="deleteJob()"
                             ng-hide="workflow.status == 'running' ||
@@ -140,6 +143,26 @@
                         </div>
                     </div>
 
+                    <!-- LIMIT -->
+                    <div class="WorkflowResults-resultRow" ng-show="workflow.limit">
+                      <label class="WorkflowResults-resultRowLabel">
+                          {{ strings.labels.LIMIT }}
+                      </label>
+                      <div class="WorkflowResults-resultRowText">
+                          {{ workflow.limit }}
+                      </div>
+                    </div>
+
+                    <!-- BRANCH -->
+                    <div class="WorkflowResults-resultRow" ng-show="workflow.scm_branch">
+                      <label class="WorkflowResults-resultRowLabel">
+                          {{ strings.labels.SCM_BRANCH }}
+                      </label>
+                      <div class="WorkflowResults-resultRowText">
+                          {{ workflow.scm_branch }}
+                      </div>
+                    </div>
+
                     <!-- TEMPLATE DETAIL -->
                     <div class="WorkflowResults-resultRow"
                         ng-show="workflow.summary_fields.workflow_job_template.name">
@@ -157,7 +180,7 @@
 
                     <!-- CREATED BY DETAIL -->
                     <div class="WorkflowResults-resultRow"
-                        ng-show="workflow.summary_fields.created_by.username">
+                        ng-show="workflow.summary_fields.created_by.username && !launched_by_webhook_link">
                         <label class="WorkflowResults-resultRowLabel">
                             {{ strings.labels.LAUNCHED_BY }}
                         </label>
@@ -172,7 +195,7 @@
 
                     <!-- SCHEDULED BY DETAIL -->
                     <div class="WorkflowResults-resultRow toggle-show"
-                        ng-show="workflow.summary_fields.schedule.name">
+                        ng-show="workflow.summary_fields.schedule.name && !launched_by_webhook_link">
                         <label
                             class="WorkflowResults-resultRowLabel">
                             {{ strings.labels.LAUNCHED_BY }}
@@ -182,6 +205,23 @@
                                 aw-tool-tip="{{ strings.tooltips.EDIT_SCHEDULE }}"
                                 data-placement="top">
                                 {{ workflow.summary_fields.schedule.name }}
+                            </a>
+                        </div>
+                    </div>
+
+
+                    <!-- LAUNCHED BY WEBHOOK DETAIL -->
+                    <div class="WorkflowResults-resultRow toggle-show"
+                        ng-show="launched_by_webhook_link">
+                        <label
+                            class="WorkflowResults-resultRowLabel">
+                            {{ strings.labels.LAUNCHED_BY }}
+                        </label>
+                        <div class="WorkflowResults-resultRowText">
+                            <a href="{{ launched_by_webhook_link }}"
+                                aw-tool-tip="{{ strings.tooltips.WEBHOOK_WORKFLOW_JOB_TEMPLATE }}"
+                                data-placement="top">
+                                {{ strings.details.WEBHOOK }}
                             </a>
                         </div>
                     </div>
@@ -312,6 +352,7 @@
 
                             <!-- FULL-SCREEN TOGGLE ACTION -->
                             <button class="StandardOut-actionButton"
+                                aria-label="{{ strings.tooltips.TOGGLE_STDOUT_FULLSCREEN }}"
                                 aw-tool-tip="{{ strings.tooltips.TOGGLE_STDOUT_FULLSCREEN }}"
                                 data-tip-watch="strings.tooltips.TOGGLE_STDOUT_FULLSCREEN"
                                 data-placement="top"
@@ -327,35 +368,7 @@
                 <div class="WorkflowLegend-details">
                     <div class="WorkflowLegend-details--left">
                         <i ng-class="{{ keyClassList }}" class="fa fa-compass Key-menuIcon" ng-click="toggleKey()"></i>
-                        <ul ng-show="showKey" class="Key-list noselect">
-                            <li class="Key-listItem">
-                                <p class="Key-heading">{{strings.legend.KEY}}</p>
-                            </li>
-                            <li class="Key-listItem">
-                                <div class="Key-icon Key-icon--success"></div>
-                                <p class="Key-listItemContent">{{strings.legend.ON_SUCCESS}}</p>
-                            </li>
-                            <li class="Key-listItem">
-                                <div class="Key-icon Key-icon--fail"></div>
-                                <p class="Key-listItemContent">{{strings.legend.ON_FAILURE}}</p>
-                            </li>
-                            <li class="Key-listItem">
-                                <div class="Key-icon Key-icon--always"></div>
-                                <p class="Key-listItemContent">{{strings.legend.ALWAYS}}</p>
-                            </li>
-                            <li class="Key-listItem">
-                                <div class="Key-icon Key-icon--circle Key-icon--default">P</div>
-                                <p class="Key-listItemContent Key-listItemContent--circle">{{strings.legend.PROJECT_SYNC}}</p>
-                            </li>
-                            <li class="Key-listItem">
-                                <div class="Key-icon Key-icon--circle Key-icon--default">I</div>
-                                <p class="Key-listItemContent Key-listItemContent--circle">{{strings.legend.INVENTORY_SYNC}}</p>
-                            </li>
-                            <li class="Key-listItem">
-                                <div class="Key-icon Key-icon--circle Key-icon--default">W</div>
-                                <p class="Key-listItemContent Key-listItemContent--circle">{{strings.legend.WORKFLOW}}</p>
-                            </li>
-                        </ul>
+                        <workflow-key ng-show="showKey"></workflow-key>
                     </div>
                     <div class="WorkflowLegend-details--right">
                         <i ng-class="{'WorkflowMaker-manualControlsIcon--active': showManualControls}" class="fa fa-cog WorkflowMaker-manualControlsIcon" aria-hidden="true" alt="Controls" ng-click="toggleManualControls()"></i>
@@ -367,7 +380,6 @@
                 <workflow-chart
                     graph-state="graphState"
                     workflow-zoomed="workflowZoomed(zoom)"
-                    can-add-workflow-job-template="canAddWorkflowJobTemplate"
                     mode="details"
                     read-only="readOnly"
                     class="WorkflowMaker-chart">

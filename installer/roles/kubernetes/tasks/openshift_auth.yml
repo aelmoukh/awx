@@ -17,7 +17,7 @@
   shell: |
     {{ openshift_oc_bin }} login {{ openshift_host }} \
       -u {{ openshift_user }} \
-      -p {{ openshift_password }} \
+      -p {{ openshift_password | quote }} \
       --insecure-skip-tls-verify={{ openshift_skip_tls_verify | default(false) | bool }}
   when:
     - openshift_user is defined
@@ -54,4 +54,3 @@
   fail:
     msg: "{{ openshift_auth_result.stderr | default('Invalid token') }}"
   when: openshift_auth_result.rc is defined and openshift_auth_result.rc != 0
-

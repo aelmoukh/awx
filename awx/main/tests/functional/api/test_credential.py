@@ -1,4 +1,3 @@
-import itertools
 import re
 
 from unittest import mock # noqa
@@ -27,285 +26,114 @@ def test_idempotent_credential_type_setup():
     assert CredentialType.objects.count() == total
 
 
-@pytest.mark.django_db
-@pytest.mark.parametrize('kind, total', [
-    ('ssh', 1), ('net', 0)
-])
-def test_filter_by_v1_kind(get, admin, organization, kind, total):
-    CredentialType.setup_tower_managed_defaults()
-    cred = Credential(
-        credential_type=CredentialType.from_v1_kind('ssh'),
-        name='Best credential ever',
-        organization=organization,
-        inputs={
-            'username': u'jim',
-            'password': u'secret'
-        }
-    )
-    cred.save()
-
-    response = get(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        admin,
-        QUERY_STRING='kind=%s' % kind
-    )
-    assert response.status_code == 200
-    assert response.data['count'] == total
-
-
-@pytest.mark.django_db
-def test_filter_by_v1_kind_with_vault(get, admin, organization):
-    CredentialType.setup_tower_managed_defaults()
-    cred = Credential(
-        credential_type=CredentialType.objects.get(kind='ssh'),
-        name='Best credential ever',
-        organization=organization,
-        inputs={
-            'username': u'jim',
-            'password': u'secret'
-        }
-    )
-    cred.save()
-    cred = Credential(
-        credential_type=CredentialType.objects.get(kind='vault'),
-        name='Best credential ever',
-        organization=organization,
-        inputs={
-            'vault_password': u'vault!'
-        }
-    )
-    cred.save()
-
-    response = get(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        admin,
-        QUERY_STRING='kind=ssh'
-    )
-    assert response.status_code == 200
-    assert response.data['count'] == 2
-
-
-@pytest.mark.django_db
-def test_insights_credentials_in_v1_api_list(get, admin, organization):
-    credential_type = CredentialType.defaults['insights']()
-    credential_type.save()
-    cred = Credential(
-        credential_type=credential_type,
-        name='Best credential ever',
-        organization=organization,
-        inputs={
-            'username': u'joe',
-            'password': u'secret'
-        }
-    )
-    cred.save()
-
-    response = get(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        admin
-    )
-    assert response.status_code == 200
-    assert response.data['count'] == 1
-    cred = response.data['results'][0]
-    assert cred['kind'] == 'insights'
-    assert cred['username'] == 'joe'
-    assert cred['password'] == '$encrypted$'
-
-
-@pytest.mark.django_db
-def test_create_insights_credentials_in_v1(get, post, admin, organization):
-    credential_type = CredentialType.defaults['insights']()
-    credential_type.save()
-
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        {
-            'name': 'Best Credential Ever',
-            'organization': organization.id,
-            'kind': 'insights',
-            'username': 'joe',
-            'password': 'secret'
-        },
-        admin
-    )
-    assert response.status_code == 201
-    cred = Credential.objects.get(pk=response.data['id'])
-    assert cred.username == 'joe'
-    assert decrypt_field(cred, 'password') == 'secret'
-    assert cred.credential_type == credential_type
-
-
-@pytest.mark.django_db
-def test_custom_credentials_not_in_v1_api_list(get, admin, organization):
-    """
-    'Custom' credentials (those not managed by Tower) shouldn't be visible from
-    the V1 credentials API list
-    """
-    credential_type = CredentialType(
-        kind='cloud',
-        name='MyCloud',
-        inputs = {
-            'fields': [{
-                'id': 'password',
-                'label': 'Password',
-                'type': 'string',
-                'secret': True
-            }]
-        }
-    )
-    credential_type.save()
-    cred = Credential(
-        credential_type=credential_type,
-        name='Best credential ever',
-        organization=organization,
-        inputs={
-            'password': u'secret'
-        }
-    )
-    cred.save()
-
-    response = get(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        admin
-    )
-    assert response.status_code == 200
-    assert response.data['count'] == 0
-
-
-@pytest.mark.django_db
-def test_custom_credentials_not_in_v1_api_detail(get, admin, organization):
-    """
-    'Custom' credentials (those not managed by Tower) shouldn't be visible from
-    the V1 credentials API detail
-    """
-    credential_type = CredentialType(
-        kind='cloud',
-        name='MyCloud',
-        inputs = {
-            'fields': [{
-                'id': 'password',
-                'label': 'Password',
-                'type': 'string',
-                'secret': True
-            }]
-        }
-    )
-    credential_type.save()
-    cred = Credential(
-        credential_type=credential_type,
-        name='Best credential ever',
-        organization=organization,
-        inputs={
-            'password': u'secret'
-        }
-    )
-    cred.save()
-
-    response = get(
-        reverse('api:credential_detail', kwargs={'version': 'v1', 'pk': cred.pk}),
-        admin
-    )
-    assert response.status_code == 404
-
-
-@pytest.mark.django_db
-def test_filter_by_v1_invalid_kind(get, admin, organization):
-    response = get(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        admin,
-        QUERY_STRING='kind=bad_kind'
-    )
-    assert response.status_code == 400
-
-
 #
 # user credential creation
 #
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_user_credential_via_credentials_list(post, get, alice, credentialtype_ssh, version, params):
-    params['user'] = alice.id
-    params['name'] = 'Some name'
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        alice
-    )
+def test_create_user_credential_via_credentials_list(post, get, alice, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'user': alice.id,
+        'name': 'Some name',
+    }
+    response = post(reverse('api:credential_list'), params, alice)
     assert response.status_code == 201
 
-    response = get(reverse('api:credential_list', kwargs={'version': version}), alice)
+    response = get(reverse('api:credential_list'), alice)
     assert response.status_code == 200
     assert response.data['count'] == 1
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_credential_validation_error_with_bad_user(post, admin, version, credentialtype_ssh, params):
-    params['user'] = 'asdf'
-    params['name'] = 'Some name'
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+def test_credential_validation_error_with_bad_user(post, admin, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'user': 'asdf',
+        'name': 'Some name'
+    }
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 400
     assert response.data['user'][0] == 'Incorrect type. Expected pk value, received str.'
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_user_credential_via_user_credentials_list(post, get, alice, credentialtype_ssh, version, params):
-    params['user'] = alice.id
-    params['name'] = 'Some name'
+def test_credential_validation_error_with_no_owner_field(post, admin, credentialtype_ssh):
+    params = {
+        'credential_type': credentialtype_ssh.id,
+        'inputs': {'username': 'someusername'},
+        'name': 'Some name',
+    }
+    response = post(reverse('api:credential_list'), params, admin)
+    assert response.status_code == 400
+    assert response.data['detail'][0] == "Missing 'user', 'team', or 'organization'."
+
+
+@pytest.mark.django_db
+def test_credential_validation_error_with_multiple_owner_fields(post, admin, alice, team, organization, credentialtype_ssh):
+    params = {
+        'credential_type': credentialtype_ssh.id,
+        'inputs': {'username': 'someusername'},
+        'team': team.id,
+        'user': alice.id,
+        'organization': organization.id,
+        'name': 'Some name',
+    }
+    response = post(reverse('api:credential_list'), params, admin)
+    assert response.status_code == 400
+    assert response.data['detail'][0] == (
+        "Only one of 'user', 'team', or 'organization' should be provided, "
+        "received organization, team, user fields."
+    )
+
+
+@pytest.mark.django_db
+def test_create_user_credential_via_user_credentials_list(post, get, alice, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'user': alice.id,
+        'name': 'Some name',
+    }
     response = post(
-        reverse('api:user_credentials_list', kwargs={'version': version, 'pk': alice.pk}),
+        reverse('api:user_credentials_list', kwargs={'pk': alice.pk}),
         params,
         alice
     )
     assert response.status_code == 201
 
-    response = get(reverse('api:user_credentials_list', kwargs={'version': version, 'pk': alice.pk}), alice)
+    response = get(reverse('api:user_credentials_list', kwargs={'pk': alice.pk}), alice)
     assert response.status_code == 200
     assert response.data['count'] == 1
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_user_credential_via_credentials_list_xfail(post, alice, bob, version, params):
+def test_create_user_credential_via_credentials_list_xfail(post, alice, bob):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'user': bob.id,
+        'name': 'Some name',
+    }
     params['user'] = bob.id
     params['name'] = 'Some name'
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        alice
-    )
+    response = post(reverse('api:credential_list'), params, alice)
     assert response.status_code == 403
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_user_credential_via_user_credentials_list_xfail(post, alice, bob, version, params):
-    params['user'] = bob.id
-    params['name'] = 'Some name'
+def test_create_user_credential_via_user_credentials_list_xfail(post, alice, bob):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'user': bob.id,
+        'name': 'Some name',
+    }
     response = post(
-        reverse('api:user_credentials_list', kwargs={'version': version, 'pk': bob.pk}),
+        reverse('api:user_credentials_list', kwargs={'pk': bob.pk}),
         params,
         alice
     )
@@ -318,22 +146,18 @@ def test_create_user_credential_via_user_credentials_list_xfail(post, alice, bob
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_team_credential(post, get, team, organization, org_admin, team_member, credentialtype_ssh, version, params):
-    params['team'] = team.id
-    params['name'] = 'Some name'
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        org_admin
-    )
+def test_create_team_credential(post, get, team, organization, org_admin, team_member, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'team': team.id,
+        'name': 'Some name',
+    }
+    response = post(reverse('api:credential_list'), params, org_admin)
     assert response.status_code == 201
 
     response = get(
-        reverse('api:team_credentials_list', kwargs={'version': version, 'pk': team.pk}),
+        reverse('api:team_credentials_list', kwargs={'pk': team.pk}),
         team_member
     )
     assert response.status_code == 200
@@ -344,22 +168,22 @@ def test_create_team_credential(post, get, team, organization, org_admin, team_m
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_team_credential_via_team_credentials_list(post, get, team, org_admin, team_member, credentialtype_ssh, version, params):
-    params['team'] = team.id
-    params['name'] = 'Some name'
+def test_create_team_credential_via_team_credentials_list(post, get, team, org_admin, team_member, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'team': team.id,
+        'name': 'Some name',
+    }
     response = post(
-        reverse('api:team_credentials_list', kwargs={'version': version, 'pk': team.pk}),
+        reverse('api:team_credentials_list', kwargs={'pk': team.pk}),
         params,
         org_admin
     )
     assert response.status_code == 201
 
     response = get(
-        reverse('api:team_credentials_list', kwargs={'version': version, 'pk': team.pk}),
+        reverse('api:team_credentials_list', kwargs={'pk': team.pk}),
         team_member
     )
     assert response.status_code == 200
@@ -367,37 +191,29 @@ def test_create_team_credential_via_team_credentials_list(post, get, team, org_a
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_team_credential_by_urelated_user_xfail(post, team, organization, alice, team_member, version, params):
-    params['team'] = team.id
-    params['organization'] = organization.id
-    params['name'] = 'Some name'
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        alice
-    )
+def test_create_team_credential_by_urelated_user_xfail(post, team, organization, alice, team_member):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'team': team.id,
+        'organization': organization.id,
+        'name': 'Some name',
+    }
+    response = post(reverse('api:credential_list'), params, alice)
     assert response.status_code == 403
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_team_credential_by_team_member_xfail(post, team, organization, alice, team_member, version, params):
+def test_create_team_credential_by_team_member_xfail(post, team, organization, alice, team_member):
     # Members can't add credentials, only org admins.. for now?
-    params['team'] = team.id
-    params['organization'] = organization.id
-    params['name'] = 'Some name'
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        team_member
-    )
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'team': team.id,
+        'organization': organization.id,
+        'name': 'Some name',
+    }
+    response = post(reverse('api:credential_list'), params, team_member)
     assert response.status_code == 403
 
 
@@ -407,120 +223,109 @@ def test_create_team_credential_by_team_member_xfail(post, team, organization, a
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_org_credential_to_org_user_through_role_users(post, credential, organization, org_admin, org_member, version):
+def test_grant_org_credential_to_org_user_through_role_users(post, credential, organization, org_admin, org_member):
     credential.organization = organization
     credential.save()
-    response = post(reverse('api:role_users_list', kwargs={'version': version, 'pk': credential.use_role.id}), {
+    response = post(reverse('api:role_users_list', kwargs={'pk': credential.use_role.id}), {
         'id': org_member.id
     }, org_admin)
     assert response.status_code == 204
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_org_credential_to_org_user_through_user_roles(post, credential, organization, org_admin, org_member, version):
+def test_grant_org_credential_to_org_user_through_user_roles(post, credential, organization, org_admin, org_member):
     credential.organization = organization
     credential.save()
-    response = post(reverse('api:user_roles_list', kwargs={'version': version, 'pk': org_member.id}), {
+    response = post(reverse('api:user_roles_list', kwargs={'pk': org_member.id}), {
         'id': credential.use_role.id
     }, org_admin)
     assert response.status_code == 204
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_org_credential_to_non_org_user_through_role_users(post, credential, organization, org_admin, alice, version):
+def test_grant_org_credential_to_non_org_user_through_role_users(post, credential, organization, org_admin, alice):
     credential.organization = organization
     credential.save()
-    response = post(reverse('api:role_users_list', kwargs={'version': version, 'pk': credential.use_role.id}), {
+    response = post(reverse('api:role_users_list', kwargs={'pk': credential.use_role.id}), {
         'id': alice.id
     }, org_admin)
     assert response.status_code == 400
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_org_credential_to_non_org_user_through_user_roles(post, credential, organization, org_admin, alice, version):
+def test_grant_org_credential_to_non_org_user_through_user_roles(post, credential, organization, org_admin, alice):
     credential.organization = organization
     credential.save()
-    response = post(reverse('api:user_roles_list', kwargs={'version': version, 'pk': alice.id}), {
+    response = post(reverse('api:user_roles_list', kwargs={'pk': alice.id}), {
         'id': credential.use_role.id
     }, org_admin)
     assert response.status_code == 400
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_private_credential_to_user_through_role_users(post, credential, alice, bob, version):
+def test_grant_private_credential_to_user_through_role_users(post, credential, alice, bob):
     # normal users can't do this
     credential.admin_role.members.add(alice)
-    response = post(reverse('api:role_users_list', kwargs={'version': version, 'pk': credential.use_role.id}), {
+    response = post(reverse('api:role_users_list', kwargs={'pk': credential.use_role.id}), {
         'id': bob.id
     }, alice)
     assert response.status_code == 400
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_private_credential_to_org_user_through_role_users(post, credential, org_admin, org_member, version):
+def test_grant_private_credential_to_org_user_through_role_users(post, credential, org_admin, org_member):
     # org admins can't either
     credential.admin_role.members.add(org_admin)
-    response = post(reverse('api:role_users_list', kwargs={'version': version, 'pk': credential.use_role.id}), {
+    response = post(reverse('api:role_users_list', kwargs={'pk': credential.use_role.id}), {
         'id': org_member.id
     }, org_admin)
     assert response.status_code == 400
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_sa_grant_private_credential_to_user_through_role_users(post, credential, admin, bob, version):
+def test_sa_grant_private_credential_to_user_through_role_users(post, credential, admin, bob):
     # but system admins can
-    response = post(reverse('api:role_users_list', kwargs={'version': version, 'pk': credential.use_role.id}), {
+    response = post(reverse('api:role_users_list', kwargs={'pk': credential.use_role.id}), {
         'id': bob.id
     }, admin)
     assert response.status_code == 204
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_private_credential_to_user_through_user_roles(post, credential, alice, bob, version):
+def test_grant_private_credential_to_user_through_user_roles(post, credential, alice, bob):
     # normal users can't do this
     credential.admin_role.members.add(alice)
-    response = post(reverse('api:user_roles_list', kwargs={'version': version, 'pk': bob.id}), {
+    response = post(reverse('api:user_roles_list', kwargs={'pk': bob.id}), {
         'id': credential.use_role.id
     }, alice)
     assert response.status_code == 400
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_private_credential_to_org_user_through_user_roles(post, credential, org_admin, org_member, version):
+def test_grant_private_credential_to_org_user_through_user_roles(post, credential, org_admin, org_member):
     # org admins can't either
     credential.admin_role.members.add(org_admin)
-    response = post(reverse('api:user_roles_list', kwargs={'version': version, 'pk': org_member.id}), {
+    response = post(reverse('api:user_roles_list', kwargs={'pk': org_member.id}), {
         'id': credential.use_role.id
     }, org_admin)
     assert response.status_code == 400
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_sa_grant_private_credential_to_user_through_user_roles(post, credential, admin, bob, version):
+def test_sa_grant_private_credential_to_user_through_user_roles(post, credential, admin, bob):
     # but system admins can
-    response = post(reverse('api:user_roles_list', kwargs={'version': version, 'pk': bob.id}), {
+    response = post(reverse('api:user_roles_list', kwargs={'pk': bob.id}), {
         'id': credential.use_role.id
     }, admin)
     assert response.status_code == 204
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_org_credential_to_team_through_role_teams(post, credential, organization, org_admin, org_auditor, team, version):
+def test_grant_org_credential_to_team_through_role_teams(post, credential, organization, org_admin, org_auditor, team):
     assert org_auditor not in credential.read_role
     credential.organization = organization
     credential.save()
-    response = post(reverse('api:role_teams_list', kwargs={'version': version, 'pk': credential.use_role.id}), {
+    response = post(reverse('api:role_teams_list', kwargs={'pk': credential.use_role.id}), {
         'id': team.id
     }, org_admin)
     assert response.status_code == 204
@@ -528,12 +333,11 @@ def test_grant_org_credential_to_team_through_role_teams(post, credential, organ
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_grant_org_credential_to_team_through_team_roles(post, credential, organization, org_admin, org_auditor, team, version):
+def test_grant_org_credential_to_team_through_team_roles(post, credential, organization, org_admin, org_auditor, team):
     assert org_auditor not in credential.read_role
     credential.organization = organization
     credential.save()
-    response = post(reverse('api:team_roles_list', kwargs={'version': version, 'pk': team.id}), {
+    response = post(reverse('api:team_roles_list', kwargs={'pk': team.id}), {
         'id': credential.use_role.id
     }, org_admin)
     assert response.status_code == 204
@@ -541,20 +345,18 @@ def test_grant_org_credential_to_team_through_team_roles(post, credential, organ
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_sa_grant_private_credential_to_team_through_role_teams(post, credential, admin, team, version):
+def test_sa_grant_private_credential_to_team_through_role_teams(post, credential, admin, team):
     # not even a system admin can grant a private cred to a team though
-    response = post(reverse('api:role_teams_list', kwargs={'version': version, 'pk': credential.use_role.id}), {
+    response = post(reverse('api:role_teams_list', kwargs={'pk': credential.use_role.id}), {
         'id': team.id
     }, admin)
     assert response.status_code == 400
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version', ['v1', 'v2'])
-def test_sa_grant_private_credential_to_team_through_team_roles(post, credential, admin, team, version):
+def test_sa_grant_private_credential_to_team_through_team_roles(post, credential, admin, team):
     # not even a system admin can grant a private cred to a team though
-    response = post(reverse('api:role_teams_list', kwargs={'version': version, 'pk': team.id}), {
+    response = post(reverse('api:role_teams_list', kwargs={'pk': team.id}), {
         'id': credential.use_role.id
     }, admin)
     assert response.status_code == 400
@@ -566,13 +368,13 @@ def test_sa_grant_private_credential_to_team_through_team_roles(post, credential
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_org_credential_as_not_admin(post, organization, org_member, credentialtype_ssh, version, params):
-    params['name'] = 'Some name'
-    params['organization'] = organization.id
+def test_create_org_credential_as_not_admin(post, organization, org_member, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'name': 'Some name',
+        'organization': organization.id,
+    }
     response = post(
         reverse('api:credential_list'),
         params,
@@ -582,37 +384,33 @@ def test_create_org_credential_as_not_admin(post, organization, org_member, cred
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_create_org_credential_as_admin(post, organization, org_admin, credentialtype_ssh, version, params):
-    params['name'] = 'Some name'
-    params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        org_admin
-    )
+def test_create_org_credential_as_admin(post, organization, org_admin, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'name': 'Some name',
+        'organization': organization.id,
+    }
+    response = post(reverse('api:credential_list'), params, org_admin)
     assert response.status_code == 201
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_credential_detail(post, get, organization, org_admin, credentialtype_ssh, version, params):
-    params['name'] = 'Some name'
-    params['organization'] = organization.id
+def test_credential_detail(post, get, organization, org_admin, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'name': 'Some name',
+        'organization': organization.id,
+    }
     response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
+        reverse('api:credential_list'),
         params,
         org_admin
     )
     assert response.status_code == 201
     response = get(
-        reverse('api:credential_detail', kwargs={'version': version, 'pk': response.data['id']}),
+        reverse('api:credential_detail', kwargs={'pk': response.data['id']}),
         org_admin
     )
     assert response.status_code == 200
@@ -623,43 +421,43 @@ def test_credential_detail(post, get, organization, org_admin, credentialtype_ss
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'username': 'someusername'}],
-    ['v2', {'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
-def test_list_created_org_credentials(post, get, organization, org_admin, org_member, credentialtype_ssh, version, params):
-    params['name'] = 'Some name'
-    params['organization'] = organization.id
+def test_list_created_org_credentials(post, get, organization, org_admin, org_member, credentialtype_ssh):
+    params = {
+        'credential_type': 1,
+        'inputs': {'username': 'someusername'},
+        'name': 'Some name',
+        'organization': organization.id,
+    }
     response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
+        reverse('api:credential_list'),
         params,
         org_admin
     )
     assert response.status_code == 201
 
     response = get(
-        reverse('api:credential_list', kwargs={'version': version}),
+        reverse('api:credential_list'),
         org_admin
     )
     assert response.status_code == 200
     assert response.data['count'] == 1
 
     response = get(
-        reverse('api:credential_list', kwargs={'version': version}),
+        reverse('api:credential_list'),
         org_member
     )
     assert response.status_code == 200
     assert response.data['count'] == 0
 
     response = get(
-        reverse('api:organization_credential_list', kwargs={'version': version, 'pk': organization.pk}),
+        reverse('api:organization_credential_list', kwargs={'pk': organization.pk}),
         org_admin
     )
     assert response.status_code == 200
     assert response.data['count'] == 1
 
     response = get(
-        reverse('api:organization_credential_list', kwargs={'version': version, 'pk': organization.pk}),
+        reverse('api:organization_credential_list', kwargs={'pk': organization.pk}),
         org_member
     )
     assert response.status_code == 200
@@ -667,12 +465,11 @@ def test_list_created_org_credentials(post, get, organization, org_admin, org_me
 
 
 @pytest.mark.parametrize('order_by', ('password', '-password', 'password,pk', '-password,pk'))
-@pytest.mark.parametrize('version', ('v1', 'v2'))
 @pytest.mark.django_db
-def test_list_cannot_order_by_encrypted_field(post, get, organization, org_admin, credentialtype_ssh, order_by, version):
+def test_list_cannot_order_by_encrypted_field(post, get, organization, org_admin, credentialtype_ssh, order_by):
     for i, password in enumerate(('abc', 'def', 'xyz')):
         response = post(
-            reverse('api:credential_list', kwargs={'version': version}),
+            reverse('api:credential_list'),
             {
                 'organization': organization.id,
                 'name': 'C%d' % i,
@@ -682,28 +479,12 @@ def test_list_cannot_order_by_encrypted_field(post, get, organization, org_admin
         )
 
     response = get(
-        reverse('api:credential_list', kwargs={'version': version}),
+        reverse('api:credential_list'),
         org_admin,
         QUERY_STRING='order_by=%s' % order_by,
         status=400
     )
     assert response.status_code == 400
-
-
-@pytest.mark.django_db
-def test_v1_credential_kind_validity(get, post, organization, admin, credentialtype_ssh):
-    params = {
-        'name': 'Best credential ever',
-        'organization': organization.id,
-        'kind': 'nonsense'
-    }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        params,
-        admin
-    )
-    assert response.status_code == 400
-    assert response.data['kind'] == ['"nonsense" is not a valid choice']
 
 
 @pytest.mark.django_db
@@ -716,41 +497,9 @@ def test_inputs_cannot_contain_extra_fields(get, post, organization, admin, cred
             'invalid_field': 'foo'
         },
     }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 400
     assert "'invalid_field' was unexpected" in response.data['inputs'][0]
-
-
-@pytest.mark.django_db
-@pytest.mark.parametrize('field_name, field_value', itertools.product(
-    ['username', 'password', 'ssh_key_data', 'become_method', 'become_username', 'become_password'],  # noqa
-    ['', None]
-))
-def test_nullish_field_data(get, post, organization, admin, field_name, field_value):
-    ssh = CredentialType.defaults['ssh']()
-    ssh.save()
-    params = {
-        'name': 'Best credential ever',
-        'credential_type': ssh.pk,
-        'organization': organization.id,
-        'inputs': {
-            field_name: field_value
-        }
-    }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
-        params,
-        admin
-    )
-    assert response.status_code == 201
-
-    assert Credential.objects.count() == 1
-    cred = Credential.objects.all()[:1].get()
-    assert getattr(cred, field_name) == ''
 
 
 @pytest.mark.django_db
@@ -767,23 +516,16 @@ def test_falsey_field_data(get, post, organization, admin, field_value):
             'authorize': field_value
         }
     }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
     cred = Credential.objects.all()[:1].get()
-    assert cred.authorize is False
+    assert cred.inputs['authorize'] is False
 
 
 @pytest.mark.django_db
 @pytest.mark.parametrize('kind, extraneous', [
-    ['ssh', 'ssh_key_unlock'],
-    ['scm', 'ssh_key_unlock'],
-    ['net', 'ssh_key_unlock'],
     ['net', 'authorize_password'],
 ])
 def test_field_dependencies(get, post, organization, admin, kind, extraneous):
@@ -795,11 +537,7 @@ def test_field_dependencies(get, post, organization, admin, kind, extraneous):
         'organization': organization.id,
         'inputs': {extraneous: 'not needed'}
     }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 400
     assert re.search('cannot be set unless .+ is set.', smart_str(response.content))
 
@@ -810,16 +548,8 @@ def test_field_dependencies(get, post, organization, admin, kind, extraneous):
 # SCM Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'scm',
-        'name': 'Best credential ever',
-        'username': 'some_username',
-        'password': 'some_password',
-        'ssh_key_data': EXAMPLE_ENCRYPTED_PRIVATE_KEY,
-        'ssh_key_unlock': 'some_key_unlock',
-    }],
-    ['v2', {
+def test_scm_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -828,17 +558,11 @@ def test_field_dependencies(get, post, organization, admin, kind, extraneous):
             'ssh_key_data': EXAMPLE_ENCRYPTED_PRIVATE_KEY,
             'ssh_key_unlock': 'some_key_unlock',
         }
-    }]
-])
-def test_scm_create_ok(post, organization, admin, version, params):
+    }
     scm = CredentialType.defaults['scm']()
     scm.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -850,30 +574,18 @@ def test_scm_create_ok(post, organization, admin, version, params):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'ssh',
-        'name': 'Best credential ever',
-        'password': 'secret',
-        'vault_password': '',
-    }],
-    ['v2', {
+def test_ssh_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
             'password': 'secret',
         }
-    }]
-])
-def test_ssh_create_ok(post, organization, admin, version, params):
+    }
     ssh = CredentialType.defaults['ssh']()
     ssh.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -882,55 +594,22 @@ def test_ssh_create_ok(post, organization, admin, version, params):
     assert decrypt_field(cred, 'password') == 'secret'
 
 
-@pytest.mark.django_db
-def test_v1_ssh_vault_ambiguity(post, organization, admin):
-    vault = CredentialType.defaults['vault']()
-    vault.save()
-    params = {
-        'organization': organization.id,
-        'kind': 'ssh',
-        'name': 'Best credential ever',
-        'username': 'joe',
-        'password': 'secret',
-        'ssh_key_data': 'some_key_data',
-        'ssh_key_unlock': 'some_key_unlock',
-        'vault_password': 'vault_password',
-    }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v1'}),
-        params,
-        admin
-    )
-    assert response.status_code == 400
-
-
 #
 # Vault Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'ssh',
-        'name': 'Best credential ever',
-        'vault_password': 'some_password',
-    }],
-    ['v2', {
+def test_vault_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
             'vault_password': 'some_password',
         }
-    }]
-])
-def test_vault_create_ok(post, organization, admin, version, params):
+    }
     vault = CredentialType.defaults['vault']()
     vault.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -943,7 +622,7 @@ def test_vault_password_required(post, organization, admin):
     vault = CredentialType.defaults['vault']()
     vault.save()
     response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
+        reverse('api:credential_list'),
         {
             'credential_type': vault.pk,
             'organization': organization.id,
@@ -967,18 +646,8 @@ def test_vault_password_required(post, organization, admin):
 # Net Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'net',
-        'name': 'Best credential ever',
-        'username': 'some_username',
-        'password': 'some_password',
-        'ssh_key_data': EXAMPLE_ENCRYPTED_PRIVATE_KEY,
-        'ssh_key_unlock': 'some_key_unlock',
-        'authorize': True,
-        'authorize_password': 'some_authorize_password',
-    }],
-    ['v2', {
+def test_net_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -989,17 +658,11 @@ def test_vault_password_required(post, organization, admin):
             'authorize': True,
             'authorize_password': 'some_authorize_password',
         }
-    }]
-])
-def test_net_create_ok(post, organization, admin, version, params):
+    }
     net = CredentialType.defaults['net']()
     net.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -1016,15 +679,8 @@ def test_net_create_ok(post, organization, admin, version, params):
 # Cloudforms Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'cloudforms',
-        'name': 'Best credential ever',
-        'host': 'some_host',
-        'username': 'some_username',
-        'password': 'some_password',
-    }],
-    ['v2', {
+def test_cloudforms_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -1032,17 +688,11 @@ def test_net_create_ok(post, organization, admin, version, params):
             'username': 'some_username',
             'password': 'some_password',
         }
-    }]
-])
-def test_cloudforms_create_ok(post, organization, admin, version, params):
+    }
     cloudforms = CredentialType.defaults['cloudforms']()
     cloudforms.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -1056,15 +706,8 @@ def test_cloudforms_create_ok(post, organization, admin, version, params):
 # GCE Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'gce',
-        'name': 'Best credential ever',
-        'username': 'some_username',
-        'project': 'some_project',
-        'ssh_key_data': EXAMPLE_PRIVATE_KEY,
-    }],
-    ['v2', {
+def test_gce_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -1072,17 +715,11 @@ def test_cloudforms_create_ok(post, organization, admin, version, params):
             'project': 'some_project',
             'ssh_key_data': EXAMPLE_PRIVATE_KEY,
         }
-    }]
-])
-def test_gce_create_ok(post, organization, admin, version, params):
+    }
     gce = CredentialType.defaults['gce']()
     gce.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -1096,18 +733,8 @@ def test_gce_create_ok(post, organization, admin, version, params):
 # Azure Resource Manager
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'azure_rm',
-        'name': 'Best credential ever',
-        'subscription': 'some_subscription',
-        'username': 'some_username',
-        'password': 'some_password',
-        'client': 'some_client',
-        'secret': 'some_secret',
-        'tenant': 'some_tenant'
-    }],
-    ['v2', {
+def test_azure_rm_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -1118,17 +745,11 @@ def test_gce_create_ok(post, organization, admin, version, params):
             'secret': 'some_secret',
             'tenant': 'some_tenant'
         }
-    }]
-])
-def test_azure_rm_create_ok(post, organization, admin, version, params):
+    }
     azure_rm = CredentialType.defaults['azure_rm']()
     azure_rm.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -1145,15 +766,8 @@ def test_azure_rm_create_ok(post, organization, admin, version, params):
 # RH Satellite6 Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'satellite6',
-        'name': 'Best credential ever',
-        'host': 'some_host',
-        'username': 'some_username',
-        'password': 'some_password',
-    }],
-    ['v2', {
+def test_satellite6_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -1161,17 +775,11 @@ def test_azure_rm_create_ok(post, organization, admin, version, params):
             'username': 'some_username',
             'password': 'some_password',
         }
-    }]
-])
-def test_satellite6_create_ok(post, organization, admin, version, params):
+    }
     sat6 = CredentialType.defaults['satellite6']()
     sat6.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -1185,15 +793,8 @@ def test_satellite6_create_ok(post, organization, admin, version, params):
 # AWS Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'aws',
-        'name': 'Best credential ever',
-        'username': 'some_username',
-        'password': 'some_password',
-        'security_token': 'abc123'
-    }],
-    ['v2', {
+def test_aws_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -1201,17 +802,11 @@ def test_satellite6_create_ok(post, organization, admin, version, params):
             'password': 'some_password',
             'security_token': 'abc123'
         }
-    }]
-])
-def test_aws_create_ok(post, organization, admin, version, params):
+    }
     aws = CredentialType.defaults['aws']()
     aws.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -1222,26 +817,16 @@ def test_aws_create_ok(post, organization, admin, version, params):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'aws',
-        'name': 'Best credential ever',
-    }],
-    ['v2', {
+def test_aws_create_fail_required_fields(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {}
-    }]
-])
-def test_aws_create_fail_required_fields(post, organization, admin, version, params):
+    }
     aws = CredentialType.defaults['aws']()
     aws.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
     assert Credential.objects.count() == 1
 
@@ -1257,15 +842,8 @@ def test_aws_create_fail_required_fields(post, organization, admin, version, par
 # VMware vCenter Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'vmware',
-        'host': 'some_host',
-        'name': 'Best credential ever',
-        'username': 'some_username',
-        'password': 'some_password'
-    }],
-    ['v2', {
+def test_vmware_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {
@@ -1273,17 +851,11 @@ def test_aws_create_fail_required_fields(post, organization, admin, version, par
             'username': 'some_username',
             'password': 'some_password'
         }
-    }]
-])
-def test_vmware_create_ok(post, organization, admin, version, params):
+    }
     vmware = CredentialType.defaults['vmware']()
     vmware.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     assert Credential.objects.count() == 1
@@ -1294,26 +866,16 @@ def test_vmware_create_ok(post, organization, admin, version, params):
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'vmware',
-        'name': 'Best credential ever',
-    }],
-    ['v2', {
+def test_vmware_create_fail_required_fields(post, organization, admin):
+    params = {
         'credential_type': 1,
         'name': 'Best credential ever',
         'inputs': {}
-    }]
-])
-def test_vmware_create_fail_required_fields(post, organization, admin, version, params):
+    }
     vmware = CredentialType.defaults['vmware']()
     vmware.save()
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
     assert Credential.objects.count() == 1
 
@@ -1329,14 +891,8 @@ def test_vmware_create_fail_required_fields(post, organization, admin, version, 
 # Openstack Credentials
 #
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'username': 'some_user',
-        'password': 'some_password',
-        'project': 'some_project',
-        'host': 'some_host',
-    }],
-    ['v2', {
+def test_openstack_create_ok(post, organization, admin):
+    params = {
         'credential_type': 1,
         'inputs': {
             'username': 'some_user',
@@ -1344,19 +900,13 @@ def test_vmware_create_fail_required_fields(post, organization, admin, version, 
             'project': 'some_project',
             'host': 'some_host',
         }
-    }]
-])
-def test_openstack_create_ok(post, organization, admin, version, params):
+    }
     openstack = CredentialType.defaults['openstack']()
     openstack.save()
     params['kind'] = 'openstack'
     params['name'] = 'Best credential ever'
     params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
 
@@ -1383,11 +933,7 @@ def test_openstack_verify_ssl(get, post, organization, admin, verify_ssl, expect
         'name': 'Best credential ever',
         'organization': organization.id
     }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     cred = Credential.objects.get(pk=response.data['id'])
@@ -1395,24 +941,17 @@ def test_openstack_verify_ssl(get, post, organization, admin, verify_ssl, expect
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {}],
-    ['v2', {
-        'credential_type': 1,
-        'inputs': {}
-    }]
-])
-def test_openstack_create_fail_required_fields(post, organization, admin, version, params):
+def test_openstack_create_fail_required_fields(post, organization, admin):
     openstack = CredentialType.defaults['openstack']()
     openstack.save()
-    params['kind'] = 'openstack'
-    params['name'] = 'Best credential ever'
-    params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    params = {
+        'credential_type': 1,
+        'inputs': {},
+        'kind': 'openstack',
+        'name': 'Best credential ever',
+        'organization': organization.id,
+    }
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
     # username, password, host, and project must be specified by launch time
@@ -1424,23 +963,15 @@ def test_openstack_create_fail_required_fields(post, organization, admin, versio
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'name': 'Best credential ever',
-        'kind': 'ssh',
-        'username': 'joe',
-        'password': '',
-    }],
-    ['v2', {
+def test_field_removal(put, organization, admin, credentialtype_ssh):
+    params = {
         'name': 'Best credential ever',
         'credential_type': 1,
         'inputs': {
             'username': 'joe',
             'password': '',
         }
-    }]
-])
-def test_field_removal(put, organization, admin, credentialtype_ssh, version, params):
+    }
     cred = Credential(
         credential_type=credentialtype_ssh,
         name='Best credential ever',
@@ -1454,7 +985,7 @@ def test_field_removal(put, organization, admin, credentialtype_ssh, version, pa
 
     params['organization'] = organization.id
     response = put(
-        reverse('api:credential_detail', kwargs={'version': version, 'pk': cred.pk}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         params,
         admin
     )
@@ -1471,7 +1002,7 @@ def test_field_removal(put, organization, admin, credentialtype_ssh, version, pa
     ['insights_inventories', Inventory()],
     ['unifiedjobs', Job()],
     ['unifiedjobtemplates', JobTemplate()],
-    ['unifiedjobtemplates', InventorySource()],
+    ['unifiedjobtemplates', InventorySource(source='ec2')],
     ['projects', Project()],
     ['workflowjobnodes', WorkflowJobNode()],
 ])
@@ -1493,7 +1024,7 @@ def test_credential_type_mutability(patch, organization, admin, credentialtype_s
 
     def _change_credential_type():
         return patch(
-            reverse('api:credential_detail', kwargs={'version': 'v2', 'pk': cred.pk}),
+            reverse('api:credential_detail', kwargs={'pk': cred.pk}),
             {
                 'credential_type': credentialtype_aws.pk,
                 'inputs': {
@@ -1511,7 +1042,7 @@ def test_credential_type_mutability(patch, organization, admin, credentialtype_s
     assert response.data['credential_type'] == expected
 
     response = patch(
-        reverse('api:credential_detail', kwargs={'version': 'v2', 'pk': cred.pk}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         {'name': 'Worst credential ever'},
         admin
     )
@@ -1542,7 +1073,7 @@ def test_vault_credential_type_mutability(patch, organization, admin, credential
 
     def _change_credential_type():
         return patch(
-            reverse('api:credential_detail', kwargs={'version': 'v2', 'pk': cred.pk}),
+            reverse('api:credential_detail', kwargs={'pk': cred.pk}),
             {
                 'credential_type': credentialtype_ssh.pk,
                 'inputs': {
@@ -1560,7 +1091,7 @@ def test_vault_credential_type_mutability(patch, organization, admin, credential
     assert response.data['credential_type'] == expected
 
     response = patch(
-        reverse('api:credential_detail', kwargs={'version': 'v2', 'pk': cred.pk}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         {'name': 'Worst credential ever'},
         admin
     )
@@ -1592,7 +1123,7 @@ def test_cloud_credential_type_mutability(patch, organization, admin, credential
 
     def _change_credential_type():
         return patch(
-            reverse('api:credential_detail', kwargs={'version': 'v2', 'pk': cred.pk}),
+            reverse('api:credential_detail', kwargs={'pk': cred.pk}),
             {
                 'credential_type': credentialtype_ssh.pk,
                 'inputs': {
@@ -1610,7 +1141,7 @@ def test_cloud_credential_type_mutability(patch, organization, admin, credential
     assert response.data['credential_type'] == expected
 
     response = patch(
-        reverse('api:credential_detail', kwargs={'version': 'v2', 'pk': cred.pk}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         {'name': 'Worst credential ever'},
         admin
     )
@@ -1623,23 +1154,31 @@ def test_cloud_credential_type_mutability(patch, organization, admin, credential
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
+@pytest.mark.parametrize('field', ['password', 'ssh_key_data'])
+def test_secret_fields_cannot_be_special_encrypted_variable(post, organization, admin, credentialtype_ssh, field):
+    params = {
         'name': 'Best credential ever',
-        'kind': 'ssh',
-        'username': 'joe',
-        'ssh_key_data': '$encrypted$',
-    }],
-    ['v2', {
+        'credential_type': credentialtype_ssh.id,
+        'inputs': {
+            'username': 'joe',
+            field: '$encrypted$',
+        },
+        'organization': organization.id,
+    }
+    response = post(reverse('api:credential_list'), params, admin, status=400)
+    assert str(response.data['inputs'][0]) == f'$encrypted$ is a reserved keyword, and cannot be used for {field}.'
+
+
+@pytest.mark.django_db
+def test_ssh_unlock_needed(put, organization, admin, credentialtype_ssh):
+    params = {
         'name': 'Best credential ever',
         'credential_type': 1,
         'inputs': {
             'username': 'joe',
             'ssh_key_data': '$encrypted$',
         }
-    }]
-])
-def test_ssh_unlock_needed(put, organization, admin, credentialtype_ssh, version, params):
+    }
     cred = Credential(
         credential_type=credentialtype_ssh,
         name='Best credential ever',
@@ -1654,7 +1193,7 @@ def test_ssh_unlock_needed(put, organization, admin, credentialtype_ssh, version
 
     params['organization'] = organization.id
     response = put(
-        reverse('api:credential_detail', kwargs={'version': version, 'pk': cred.pk}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         params,
         admin
     )
@@ -1663,15 +1202,8 @@ def test_ssh_unlock_needed(put, organization, admin, credentialtype_ssh, version
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'name': 'Best credential ever',
-        'kind': 'ssh',
-        'username': 'joe',
-        'ssh_key_data': '$encrypted$',
-        'ssh_key_unlock': 'superfluous-key-unlock',
-    }],
-    ['v2', {
+def test_ssh_unlock_not_needed(put, organization, admin, credentialtype_ssh):
+    params = {
         'name': 'Best credential ever',
         'credential_type': 1,
         'inputs': {
@@ -1679,9 +1211,7 @@ def test_ssh_unlock_needed(put, organization, admin, credentialtype_ssh, version
             'ssh_key_data': '$encrypted$',
             'ssh_key_unlock': 'superfluous-key-unlock',
         }
-    }]
-])
-def test_ssh_unlock_not_needed(put, organization, admin, credentialtype_ssh, version, params):
+    }
     cred = Credential(
         credential_type=credentialtype_ssh,
         name='Best credential ever',
@@ -1695,7 +1225,7 @@ def test_ssh_unlock_not_needed(put, organization, admin, credentialtype_ssh, ver
 
     params['organization'] = organization.id
     response = put(
-        reverse('api:credential_detail', kwargs={'version': version, 'pk': cred.pk}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         params,
         admin
     )
@@ -1704,15 +1234,8 @@ def test_ssh_unlock_not_needed(put, organization, admin, credentialtype_ssh, ver
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'name': 'Best credential ever',
-        'kind': 'ssh',
-        'username': 'joe',
-        'ssh_key_data': '$encrypted$',
-        'ssh_key_unlock': 'new-unlock',
-    }],
-    ['v2', {
+def test_ssh_unlock_with_prior_value(put, organization, admin, credentialtype_ssh):
+    params = {
         'name': 'Best credential ever',
         'credential_type': 1,
         'inputs': {
@@ -1720,9 +1243,7 @@ def test_ssh_unlock_not_needed(put, organization, admin, credentialtype_ssh, ver
             'ssh_key_data': '$encrypted$',
             'ssh_key_unlock': 'new-unlock',
         }
-    }]
-])
-def test_ssh_unlock_with_prior_value(put, organization, admin, credentialtype_ssh, version, params):
+    }
     cred = Credential(
         credential_type=credentialtype_ssh,
         name='Best credential ever',
@@ -1737,7 +1258,7 @@ def test_ssh_unlock_with_prior_value(put, organization, admin, credentialtype_ss
 
     params['organization'] = organization.id
     response = put(
-        reverse('api:credential_detail', kwargs={'version': version, 'pk': cred.pk}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         params,
         admin
     )
@@ -1747,48 +1268,64 @@ def test_ssh_unlock_with_prior_value(put, organization, admin, credentialtype_ss
     assert decrypt_field(cred, 'ssh_key_unlock') == 'new-unlock'
 
 
+@pytest.mark.django_db
+def test_ssh_bad_key_unlock_not_checked(put, organization, admin, credentialtype_ssh):
+    params = {
+        'name': 'Best credential ever',
+        'credential_type': 1,
+        'inputs': {
+            'username': 'oscar',
+            'ssh_key_data': 'invalid-key',
+            'ssh_key_unlock': 'unchecked-unlock',
+        }
+    }
+    cred = Credential(
+        credential_type=credentialtype_ssh,
+        name='Best credential ever',
+        organization=organization,
+        inputs={
+            'username': u'oscar',
+            'ssh_key_data': 'invalid-key',
+            'ssh_key_unlock': 'unchecked-unlock',
+        }
+    )
+    cred.save()
+
+    params['organization'] = organization.id
+    response = put(
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
+        params,
+        admin
+    )
+    assert response.status_code == 400
+    assert response.data['inputs']['ssh_key_data'] == ['Invalid certificate or key: invalid-key...']
+    assert 'ssh_key_unlock' not in response.data['inputs']
+
+
 #
 # test secret encryption/decryption
 #
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'kind': 'ssh',
-        'username': 'joe',
-        'password': 'secret',
-    }],
-    ['v2', {
+def test_secret_encryption_on_create(get, post, organization, admin, credentialtype_ssh):
+    params = {
         'credential_type': 1,
         'inputs': {
             'username': 'joe',
             'password': 'secret',
-        }
-    }]
-])
-def test_secret_encryption_on_create(get, post, organization, admin, credentialtype_ssh, version, params):
-    params['name'] = 'Best credential ever'
-    params['organization'] = organization.id
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+        },
+        'name': 'Best credential ever',
+        'organization': organization.id,
+    }
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
-    response = get(
-        reverse('api:credential_list', kwargs={'version': version}),
-        admin
-    )
+    response = get(reverse('api:credential_list'), admin)
     assert response.status_code == 200
     assert response.data['count'] == 1
     cred = response.data['results'][0]
-    if version == 'v1':
-        assert cred['username'] == 'joe'
-        assert cred['password'] == '$encrypted$'
-    elif version == 'v2':
-        assert cred['inputs']['username'] == 'joe'
-        assert cred['inputs']['password'] == '$encrypted$'
+    assert cred['inputs']['username'] == 'joe'
+    assert cred['inputs']['password'] == '$encrypted$'
 
     cred = Credential.objects.all()[:1].get()
     assert cred.inputs['password'].startswith('$encrypted$UTF8$AES')
@@ -1796,13 +1333,10 @@ def test_secret_encryption_on_create(get, post, organization, admin, credentialt
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'password': 'secret'}],
-    ['v2', {'inputs': {'username': 'joe', 'password': 'secret'}}]
-])
-def test_secret_encryption_on_update(get, post, patch, organization, admin, credentialtype_ssh, version, params):
+def test_secret_encryption_on_update(get, post, patch, organization, admin, credentialtype_ssh):
+    params = {'inputs': {'username': 'joe', 'password': 'secret'}}
     response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
+        reverse('api:credential_list'),
         {
             'name': 'Best credential ever',
             'organization': organization.id,
@@ -1816,25 +1350,18 @@ def test_secret_encryption_on_update(get, post, patch, organization, admin, cred
     assert response.status_code == 201
 
     response = patch(
-        reverse('api:credential_detail', kwargs={'pk': 1, 'version': version}),
+        reverse('api:credential_detail', kwargs={'pk': 1}),
         params,
         admin
     )
     assert response.status_code == 200
 
-    response = get(
-        reverse('api:credential_list', kwargs={'version': version}),
-        admin
-    )
+    response = get(reverse('api:credential_list'), admin)
     assert response.status_code == 200
     assert response.data['count'] == 1
     cred = response.data['results'][0]
-    if version == 'v1':
-        assert cred['username'] == 'joe'
-        assert cred['password'] == '$encrypted$'
-    elif version == 'v2':
-        assert cred['inputs']['username'] == 'joe'
-        assert cred['inputs']['password'] == '$encrypted$'
+    assert cred['inputs']['username'] == 'joe'
+    assert cred['inputs']['password'] == '$encrypted$'
 
     cred = Credential.objects.all()[:1].get()
     assert cred.inputs['password'].startswith('$encrypted$UTF8$AES')
@@ -1842,19 +1369,13 @@ def test_secret_encryption_on_update(get, post, patch, organization, admin, cred
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize('version, params', [
-    ['v1', {
-        'username': 'joe',
-        'password': '$encrypted$',
-    }],
-    ['v2', {
+def test_secret_encryption_previous_value(patch, organization, admin, credentialtype_ssh):
+    params = {
         'inputs': {
             'username': 'joe',
             'password': '$encrypted$',
         }
-    }]
-])
-def test_secret_encryption_previous_value(patch, organization, admin, credentialtype_ssh, version, params):
+    }
     cred = Credential(
         credential_type=credentialtype_ssh,
         name='Best credential ever',
@@ -1868,7 +1389,7 @@ def test_secret_encryption_previous_value(patch, organization, admin, credential
 
     assert decrypt_field(cred, 'password') == 'secret'
     response = patch(
-        reverse('api:credential_detail', kwargs={'pk': cred.pk, 'version': version}),
+        reverse('api:credential_detail', kwargs={'pk': cred.pk}),
         params,
         admin
     )
@@ -1903,17 +1424,10 @@ def test_custom_credential_type_create(get, post, organization, admin):
             'api_token': 'secret'
         }
     }
-    response = post(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 201
 
-    response = get(
-        reverse('api:credential_list', kwargs={'version': 'v2'}),
-        admin
-    )
+    response = get(reverse('api:credential_list'), admin)
     assert response.status_code == 200
     assert response.data['count'] == 1
     cred = response.data['results'][0]
@@ -1929,18 +1443,11 @@ def test_custom_credential_type_create(get, post, organization, admin):
 #
 
 
-@pytest.mark.parametrize('version, params', [
-    ['v1', {'name': 'Some name', 'username': 'someusername'}],
-    ['v2', {'name': 'Some name', 'credential_type': 1, 'inputs': {'username': 'someusername'}}]
-])
 @pytest.mark.django_db
-def test_create_credential_missing_user_team_org_xfail(post, admin, credentialtype_ssh, version, params):
+def test_create_credential_missing_user_team_org_xfail(post, admin, credentialtype_ssh):
+    params = {'name': 'Some name', 'credential_type': 1, 'inputs': {'username': 'someusername'}}
     # Must specify one of user, team, or organization
-    response = post(
-        reverse('api:credential_list', kwargs={'version': version}),
-        params,
-        admin
-    )
+    response = post(reverse('api:credential_list'), params, admin)
     assert response.status_code == 400
 
 
@@ -1973,8 +1480,20 @@ def test_create_credential_with_invalid_url_xfail(post, organization, admin, url
         'credential_type': credential_type.pk,
         'inputs': {'server_url': url}
     }
-    endpoint = reverse('api:credential_list', kwargs={'version': 'v2'})
+    endpoint = reverse('api:credential_list')
     response = post(endpoint, params, admin)
     assert response.status_code == status
     if status != 201:
         assert response.data['inputs']['server_url'] == [msg]
+
+
+@pytest.mark.django_db
+def test_external_credential_rbac_test_endpoint(post, alice, external_credential):
+    url = reverse('api:credential_external_test', kwargs={'pk': external_credential.pk})
+    data = {'metadata': {'key': 'some_key'}}
+
+    external_credential.read_role.members.add(alice)
+    assert post(url, data, alice).status_code == 403
+
+    external_credential.use_role.members.add(alice)
+    assert post(url, data, alice).status_code == 202

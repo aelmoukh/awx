@@ -92,10 +92,13 @@ export default [
         var populateFromApi = function() {
             SettingsService.getCurrentValues()
                 .then(function(data) {
+                    $scope.logAggregatorEnabled = data.LOG_AGGREGATOR_ENABLED;
                     // these two values need to be unnested from the
                     // OAUTH2_PROVIDER key
                     data.ACCESS_TOKEN_EXPIRE_SECONDS = data
                         .OAUTH2_PROVIDER.ACCESS_TOKEN_EXPIRE_SECONDS;
+                    data.REFRESH_TOKEN_EXPIRE_SECONDS = data
+                        .OAUTH2_PROVIDER.REFRESH_TOKEN_EXPIRE_SECONDS;
                     data.AUTHORIZATION_CODE_EXPIRE_SECONDS = data
                         .OAUTH2_PROVIDER.AUTHORIZATION_CODE_EXPIRE_SECONDS;
                     var currentKeys = _.keys(data);
@@ -225,11 +228,12 @@ export default [
         $scope.resetValue = function(key) {
             Wait('start');
             var payload = {};
-            if (key === 'ACCESS_TOKEN_EXPIRE_SECONDS' || key === 'AUTHORIZATION_CODE_EXPIRE_SECONDS') {
+            if (key === 'ACCESS_TOKEN_EXPIRE_SECONDS'  || key === 'REFRESH_TOKEN_EXPIRE_SECONDS' || key === 'AUTHORIZATION_CODE_EXPIRE_SECONDS') {
                 // the reset for these two keys needs to be nested under OAUTH2_PROVIDER
                 if (payload.OAUTH2_PROVIDER === undefined) {
                     payload.OAUTH2_PROVIDER = {
                         ACCESS_TOKEN_EXPIRE_SECONDS: $scope.ACCESS_TOKEN_EXPIRE_SECONDS,
+                        REFRESH_TOKEN_EXPIRE_SECONDS: $scope.REFRESH_TOKEN_EXPIRE_SECONDS,
                         AUTHORIZATION_CODE_EXPIRE_SECONDS: $scope.AUTHORIZATION_CODE_EXPIRE_SECONDS
                     };
                 }
@@ -301,6 +305,10 @@ export default [
                     $scope[fld + '_api_error'] = '';
                     $('[name="' + fld + '"]').removeClass('ng-invalid');
                 }
+                if (currentForm.fields[fld].codeMirror) {
+                    $('label[for="' + fld + '"] span').removeClass('error-color');
+                    $(`#cm-${fld}-container .CodeMirror`).removeClass('error-border');
+                }
             }
             if (!$scope.$$phase) {
                 $scope.$digest();
@@ -313,12 +321,15 @@ export default [
         var getFormPayload = function() {
             var keys = _.keys(formDefs[formTracker.getCurrent()].fields);
             var payload = {};
+            const errors = {};
+
             _.each(keys, function(key) {
-                if (key === 'ACCESS_TOKEN_EXPIRE_SECONDS' || key === 'AUTHORIZATION_CODE_EXPIRE_SECONDS') {
+                if (key === 'ACCESS_TOKEN_EXPIRE_SECONDS'  || key === 'REFRESH_TOKEN_EXPIRE_SECONDS' || key === 'AUTHORIZATION_CODE_EXPIRE_SECONDS') {
                     // These two values need to be POSTed nested under the OAUTH2_PROVIDER key
                     if (payload.OAUTH2_PROVIDER === undefined) {
                         payload.OAUTH2_PROVIDER = {
                             ACCESS_TOKEN_EXPIRE_SECONDS: $scope.ACCESS_TOKEN_EXPIRE_SECONDS,
+                            REFRESH_TOKEN_EXPIRE_SECONDS: $scope.REFRESH_TOKEN_EXPIRE_SECONDS,
                             AUTHORIZATION_CODE_EXPIRE_SECONDS: $scope.AUTHORIZATION_CODE_EXPIRE_SECONDS
                         };
                     }
@@ -346,7 +357,12 @@ export default [
                     }
                 } else if($scope.configDataResolve[key].type === 'list' && $scope[key] !== null) {
                     // Parse lists
-                    payload[key] = SettingsUtils.listToArray($scope[key], key);
+                    try {
+                        payload[key] = SettingsUtils.listToArray($scope[key], key); 
+                    } catch (error) {
+                        errors[key] = error;
+                        payload[key] = [];
+                    }
                 }
                 else if($scope.configDataResolve[key].type === 'nested object') {
                     if(!$scope[key]) {
@@ -360,21 +376,29 @@ export default [
                 else {
                     // Everything else
                     if (key !== 'LOG_AGGREGATOR_TCP_TIMEOUT' ||
-                        ($scope.LOG_AGGREGATOR_PROTOCOL.value === 'https' ||
-                            $scope.LOG_AGGREGATOR_PROTOCOL.value === 'tcp')) {
-                                payload[key] = $scope[key];
+                    ($scope.LOG_AGGREGATOR_PROTOCOL &&
+                    ($scope.LOG_AGGREGATOR_PROTOCOL.value === 'https' ||
+                        $scope.LOG_AGGREGATOR_PROTOCOL.value === 'tcp'))) {
+                            payload[key] = $scope[key];
                     }
                 }
             });
-            return payload;
+            return [payload, errors];
         };
 
         vm.formSave = function() {
             var saveDeferred = $q.defer();
             clearApiErrors();
             Wait('start');
-            const payload = getFormPayload();
-            SettingsService.patchConfiguration(getFormPayload())
+
+            const [payload, errors] = getFormPayload();
+            if (!SettingsUtils.isEmpty(errors)) {
+                ProcessErrors($scope, errors, null, formDefs[formTracker.getCurrent()], {});
+                return;
+            }
+
+            const [payloadCopy] = getFormPayload();
+            SettingsService.patchConfiguration(payloadCopy)
                 .then(function(data) {
                     loginUpdate();
 
@@ -515,8 +539,11 @@ export default [
             var payload = {};
             payload[key] = $scope[key];
             SettingsService.patchConfiguration(payload)
-                .then(function() {
+                .then(function(data) {
                     //TODO consider updating form values with returned data here
+                    if (key === 'LOG_AGGREGATOR_ENABLED') {
+                        $scope.logAggregatorEnabled = data.LOG_AGGREGATOR_ENABLED;
+                    }
                 })
                 .catch(function(data) {
                     //Change back on unsuccessful update
@@ -538,11 +565,12 @@ export default [
             var payload = {};
             clearApiErrors();
             _.each(keys, function(key) {
-                if (key === 'ACCESS_TOKEN_EXPIRE_SECONDS' || key === 'AUTHORIZATION_CODE_EXPIRE_SECONDS') {
+                if (key === 'ACCESS_TOKEN_EXPIRE_SECONDS'  || key === 'REFRESH_TOKEN_EXPIRE_SECONDS' || key === 'AUTHORIZATION_CODE_EXPIRE_SECONDS') {
                     // the reset for these two keys needs to be nested under OAUTH2_PROVIDER
                     if (payload.OAUTH2_PROVIDER === undefined) {
                         payload.OAUTH2_PROVIDER = {
                             ACCESS_TOKEN_EXPIRE_SECONDS: $scope.ACCESS_TOKEN_EXPIRE_SECONDS,
+                            REFRESH_TOKEN_EXPIRE_SECONDS: $scope.REFRESH_TOKEN_EXPIRE_SECONDS,
                             AUTHORIZATION_CODE_EXPIRE_SECONDS: $scope.AUTHORIZATION_CODE_EXPIRE_SECONDS
                         };
                     }

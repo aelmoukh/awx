@@ -3,16 +3,17 @@
 
 import logging
 import requests
-import json
 
 from django.utils.encoding import smart_text
 from django.utils.translation import ugettext_lazy as _
+
 from awx.main.notifications.base import AWXBaseEmailBackend
+from awx.main.notifications.custom_notification_base import CustomNotificationBase
 
 logger = logging.getLogger('awx.main.notifications.mattermost_backend')
 
 
-class MattermostBackend(AWXBaseEmailBackend):
+class MattermostBackend(AWXBaseEmailBackend, CustomNotificationBase):
 
     init_parameters = {"mattermost_url": {"label": "Target URL", "type": "string"},
                        "mattermost_no_verify_ssl": {"label": "Verify SSL", "type": "bool"}}
@@ -43,10 +44,10 @@ class MattermostBackend(AWXBaseEmailBackend):
             payload['text'] = m.subject
 
             r = requests.post("{}".format(m.recipients()[0]),
-                              data=json.dumps(payload), verify=(not self.mattermost_no_verify_ssl))
+                              json=payload, verify=(not self.mattermost_no_verify_ssl))
             if r.status_code >= 400:
-                logger.error(smart_text(_("Error sending notification mattermost: {}").format(r.text)))
+                logger.error(smart_text(_("Error sending notification mattermost: {}").format(r.status_code)))
                 if not self.fail_silently:
-                    raise Exception(smart_text(_("Error sending notification mattermost: {}").format(r.text)))
+                    raise Exception(smart_text(_("Error sending notification mattermost: {}").format(r.status_code)))
             sent_messages += 1
         return sent_messages

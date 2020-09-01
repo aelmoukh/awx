@@ -28,9 +28,16 @@ awx/ui/build_test
 awx/ui/client/languages
 awx/ui/templates/ui/index.html
 awx/ui/templates/ui/installing.html
+awx/ui_next/node_modules/
+awx/ui_next/src/locales/
+awx/ui_next/coverage/
+awx/ui_next/build
+awx/ui_next/.env.local
+rsyslog.pid
 /tower-license
 /tower-license/**
 tools/prometheus/data
+tools/docker-compose/Dockerfile
 
 # Tower setup playbook testing
 setup/test/roles/postgresql
@@ -122,6 +129,7 @@ local/
 requirements/vendor
 .i18n_built
 .idea/*
+*credentials*.y*ml*
 
 # AWX python libs populated by requirements.txt
 awx/lib/.deps_built
@@ -129,4 +137,13 @@ awx/lib/site-packages
 venv/*
 use_dev_supervisor.txt
 
+
+# Ansible module tests
+/awx_collection_test_venv/
+/awx_collection/*.tar.gz
+/sanity/
+/awx_collection_build/
+
 .idea/*
+*.unison.tmp
+*.#

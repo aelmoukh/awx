@@ -27,6 +27,16 @@ function createFormSchema (method, config) {
         }
     });
 
+    // Custom credentials can have input fields named 'name', 'organization',
+    // 'description', etc. Underscore these variables to make collisions
+    // less likely to occur.
+    schema._name = schema.name;
+    schema._organization = schema.organization;
+    schema._description = schema.description;
+    delete schema.name;
+    delete schema.organization;
+    delete schema.description;
+
     return schema;
 }
 
@@ -55,7 +65,7 @@ function assignInputGroupValues (apiConfig, credentialType, sourceCredentials) {
         return input;
     });
 
-    if (credentialType.get('name') === 'Machine') {
+    if (credentialType.get('namespace') === 'ssh') {
         const become = inputs.find((field) => field.id === 'become_method');
         become._isDynamic = true;
         become._choices = Array.from(apiConfig.become_methods, method => method[0]);
@@ -107,7 +117,7 @@ function setDependentResources (id) {
         {
             model: new JobTemplate(),
             params: {
-                credential: id,
+                credentials__id: id,
                 ask_credential_on_launch: false
             }
         },
@@ -120,7 +130,7 @@ function setDependentResources (id) {
         {
             model: new InventorySource(),
             params: {
-                credential: id
+                credentials__id: id
             }
         }
     ];

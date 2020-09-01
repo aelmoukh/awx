@@ -17,7 +17,8 @@ function ComponentsStrings (BaseString) {
     };
 
     ns.file = {
-        PLACEHOLDER: t.s('CHOOSE A FILE')
+        PLACEHOLDER: t.s('CHOOSE A FILE'),
+        SELECT_FILE: t.s('Select file')
     };
 
     ns.form = {
@@ -44,7 +45,8 @@ function ComponentsStrings (BaseString) {
     };
 
     ns.lookup = {
-        NOT_FOUND: t.s('That value was not found. Please enter or select a valid value.')
+        NOT_FOUND: t.s('That value was not found. Please enter or select a valid value.'),
+        PERFORM_LOOKUP: t.s('Perform lookup')
     };
 
     ns.truncate = {
@@ -85,7 +87,7 @@ function ComponentsStrings (BaseString) {
         APPLICATIONS: t.s('Applications'),
         SETTINGS: t.s('Settings'),
         ABOUT: t.s('About'),
-        COPYRIGHT: t.s('Copyright © 2018 Red Hat, Inc.'),
+        COPYRIGHT: t.s('Copyright © 2019 Red Hat, Inc.'),
         VIEWS_HEADER: t.s('Views'),
         RESOURCES_HEADER: t.s('Resources'),
         ACCESS_HEADER: t.s('Access'),
@@ -118,6 +120,23 @@ function ComponentsStrings (BaseString) {
         COMPACT: t.s('Compact'),
         EXPANDED: t.s('Expanded'),
         SORT_BY: t.s('SORT BY')
+    };
+
+    ns.approvals = {
+        APPROVAL: t.s('APPROVAL'),
+        NONE: t.s('There are no jobs awaiting approval'),
+        APPROVE: t.s('APPROVE'),
+        DENY: t.s('DENY'),
+        CONTINUE: t.s('Continue workflow job?'),
+        NOTIFICATIONS: t.s('NOTIFICATIONS'),
+        WORKFLOW_TEMPLATE: t.s('Workflow Template'),
+        EXPIRES: t.s('Expires:'),
+        EXPIRES_NEVER: t.s('Expires: Never'),
+        CLOSE_APPROVALS: t.s('Close Approvals')
+    };
+
+    ns.secret = {
+        REPLACE: t.s('Replace secret')
     };
 }
 

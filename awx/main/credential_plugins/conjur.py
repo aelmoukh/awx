@@ -1,11 +1,7 @@
-from .plugin import CredentialPlugin
+from .plugin import CredentialPlugin, CertFiles, raise_for_status
 
 import base64
-import os
-import stat
-import tempfile
-import threading
-from urllib.parse import urljoin, quote_plus
+from urllib.parse import urljoin, quote
 
 from django.utils.translation import ugettext_lazy as _
 import requests
@@ -51,53 +47,35 @@ conjur_inputs = {
 }
 
 
-def create_temporary_fifo(data):
-    """Open fifo named pipe in a new thread using a temporary file path. The
-    thread blocks until data is read from the pipe.
-
-    Returns the path to the fifo.
-
-    :param data(bytes): Data to write to the pipe.
-    """
-    path = os.path.join(tempfile.mkdtemp(), next(tempfile._get_candidate_names()))
-    os.mkfifo(path, stat.S_IRUSR | stat.S_IWUSR)
-
-    threading.Thread(
-        target=lambda p, d: open(p, 'wb').write(d),
-        args=(path, data)
-    ).start()
-    return path
-
-
 def conjur_backend(**kwargs):
     url = kwargs['url']
     api_key = kwargs['api_key']
-    account = quote_plus(kwargs['account'])
-    username = quote_plus(kwargs['username'])
-    secret_path = quote_plus(kwargs['secret_path'])
+    account = quote(kwargs['account'], safe='') 
+    username = quote(kwargs['username'], safe='')
+    secret_path = quote(kwargs['secret_path'], safe='')
     version = kwargs.get('secret_version')
     cacert = kwargs.get('cacert', None)
 
     auth_kwargs = {
         'headers': {'Content-Type': 'text/plain'},
-        'data': api_key
+        'data': api_key,
+        'allow_redirects': False,
     }
-    if cacert:
-        auth_kwargs['verify'] = create_temporary_fifo(cacert.encode())
 
-    # https://www.conjur.org/api.html#authentication-authenticate-post
-    resp = requests.post(
-        urljoin(url, '/'.join(['authn', account, username, 'authenticate'])),
-        **auth_kwargs
-    )
-    resp.raise_for_status()
+    with CertFiles(cacert) as cert:
+        # https://www.conjur.org/api.html#authentication-authenticate-post
+        auth_kwargs['verify'] = cert
+        resp = requests.post(
+            urljoin(url, '/'.join(['authn', account, username, 'authenticate'])),
+            **auth_kwargs
+        )
+    raise_for_status(resp)
     token = base64.b64encode(resp.content).decode('utf-8')
 
     lookup_kwargs = {
         'headers': {'Authorization': 'Token token="{}"'.format(token)},
+        'allow_redirects': False,
     }
-    if cacert:
-        lookup_kwargs['verify'] = create_temporary_fifo(cacert.encode())
 
     # https://www.conjur.org/api.html#secrets-retrieve-a-secret-get
     path = urljoin(url, '/'.join([
@@ -109,8 +87,10 @@ def conjur_backend(**kwargs):
     if version:
         path = '?'.join([path, version])
 
-    resp = requests.get(path, timeout=30, **lookup_kwargs)
-    resp.raise_for_status()
+    with CertFiles(cacert) as cert:
+        lookup_kwargs['verify'] = cert
+        resp = requests.get(path, timeout=30, **lookup_kwargs)
+    raise_for_status(resp)
     return resp.text
 
 

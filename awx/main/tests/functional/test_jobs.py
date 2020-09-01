@@ -2,7 +2,9 @@ import pytest
 from unittest import mock
 import json
 
-from awx.main.models import Job, Instance
+from awx.main.models import (Job, Instance, JobHostSummary, InventoryUpdate,
+                             InventorySource, Project, ProjectUpdate,
+                             SystemJob, AdHocCommand)
 from awx.main.tasks import cluster_node_heartbeat
 from django.test.utils import override_settings
 
@@ -34,6 +36,31 @@ def test_job_capacity_and_with_inactive_node():
 
 
 @pytest.mark.django_db
+def test_job_type_name():
+    job = Job.objects.create()
+    assert job.job_type_name == 'job'
+
+    ahc = AdHocCommand.objects.create()
+    assert ahc.job_type_name == 'ad_hoc_command'
+
+    source = InventorySource.objects.create(source='ec2')
+    source.save()
+    iu = InventoryUpdate.objects.create(
+        inventory_source=source,
+        source='ec2'
+    )
+    assert iu.job_type_name == 'inventory_update'
+
+    proj = Project.objects.create()
+    proj.save()
+    pu = ProjectUpdate.objects.create(project=proj)
+    assert pu.job_type_name == 'project_update'
+
+    sjob = SystemJob.objects.create()
+    assert sjob.job_type_name == 'system_job'
+
+
+@pytest.mark.django_db
 def test_job_notification_data(inventory, machine_credential, project):
     encrypted_str = "$encrypted$"
     job = Job.objects.create(
@@ -42,9 +69,27 @@ def test_job_notification_data(inventory, machine_credential, project):
         survey_passwords={"SSN": encrypted_str},
         project=project,
     )
-    job.credentials = [machine_credential]
+    job.credentials.set([machine_credential])
     notification_data = job.notification_data(block=0)
     assert json.loads(notification_data['extra_vars'])['SSN'] == encrypted_str
+
+
+@pytest.mark.django_db
+def test_job_notification_host_data(inventory, machine_credential, project, job_template, host):
+    job = Job.objects.create(
+        job_template=job_template, inventory=inventory, name='hi world', project=project
+    )
+    JobHostSummary.objects.create(job=job, host=host, changed=1, dark=2, failures=3, ok=4, processed=3, skipped=2, rescued=1, ignored=0)
+    assert job.notification_data()['hosts'] == {'single-host': 
+                                                {'failed': True,
+                                                    'changed': 1, 
+                                                    'dark': 2, 
+                                                    'failures': 3, 
+                                                    'ok': 4, 
+                                                    'processed': 3, 
+                                                    'skipped': 2, 
+                                                    'rescued': 1, 
+                                                    'ignored': 0}}
 
 
 @pytest.mark.django_db

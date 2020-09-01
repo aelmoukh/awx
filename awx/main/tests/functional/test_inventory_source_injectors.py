@@ -16,7 +16,7 @@ DATA = os.path.join(os.path.dirname(data.__file__), 'inventory')
 
 TEST_SOURCE_FIELDS = {
     'vmware': {
-        'instance_filters': 'foobaa',
+        'instance_filters': '{{ config.name == "only_my_server" }},{{ somevar == "bar"}}',
         'group_by': 'fouo'
     },
     'ec2': {
@@ -38,7 +38,10 @@ TEST_SOURCE_FIELDS = {
 
 INI_TEST_VARS = {
     'ec2': {
-        'boto_profile': '/tmp/my_boto_stuff'
+        'boto_profile': '/tmp/my_boto_stuff',
+        'iam_role_arn': 'arn:aws:iam::123456789012:role/test-role',
+        'hostname_variable': 'public_dns_name',
+        'destination_variable': 'public_dns_name'
     },
     'gce': {},
     'openstack': {
@@ -47,27 +50,30 @@ INI_TEST_VARS = {
         'expand_hostvars': True,
         'fail_on_errors': True
     },
-    'rhv': {},  # there are none
     'tower': {},  # there are none
     'vmware': {
+        'alias_pattern': "{{ config.foo }}",
+        'host_filters': '{{ config.zoo == "DC0_H0_VM0" }}',
+        'groupby_patterns': "{{ config.asdf }}",
         # setting VMWARE_VALIDATE_CERTS is duplicated with env var
     },
     'azure_rm': {
         'use_private_ip': True,
-        'resource_groups': 'foo_resources,bar_resources'
+        'resource_groups': 'foo_resources,bar_resources',
+        'tags': 'Creator:jmarshall, peanutbutter:jelly'
     },
     'satellite6': {
-        'satellite6_group_patterns': 'foo_group_patterns',
+        'satellite6_group_patterns': '["{app}-{tier}-{color}", "{app}-{color}"]',
         'satellite6_group_prefix': 'foo_group_prefix',
-        'satellite6_want_hostcollections': True
+        'satellite6_want_hostcollections': True,
+        'satellite6_want_ansible_ssh_host': True,
+        'satellite6_want_facts': True
     },
-    'cloudforms': {
-        'version': '2.4',
-        'purge_actions': 'maybe',
-        'clean_group_keys': 'this_key',
-        'nest_tags': 'yes',
-        'suffix': '.ppt',
-        'prefer_ipv4': 'yes'
+    'rhv': {  # options specific to the plugin
+        'ovirt_insecure': False,
+        'groups': {
+            'dev': '"dev" in tags'
+        }
     }
 }
 
@@ -106,21 +112,27 @@ def credential_kind(source):
 
 
 @pytest.fixture
-def fake_credential_factory(source):
-    ct = CredentialType.defaults[credential_kind(source)]()
-    ct.save()
+def fake_credential_factory():
+    def wrap(source):
+        ct = CredentialType.defaults[credential_kind(source)]()
+        ct.save()
 
-    inputs = {}
-    var_specs = {}  # pivoted version of inputs
-    for element in ct.inputs.get('fields'):
-        var_specs[element['id']] = element
-    for var in var_specs.keys():
-        inputs[var] = generate_fake_var(var_specs[var])
+        inputs = {}
+        var_specs = {}  # pivoted version of inputs
+        for element in ct.inputs.get('fields'):
+            var_specs[element['id']] = element
+        for var in var_specs.keys():
+            inputs[var] = generate_fake_var(var_specs[var])
 
-    return Credential.objects.create(
-        credential_type=ct,
-        inputs=inputs
-    )
+        if source == 'tower':
+            inputs.pop('oauth_token')  # mutually exclusive with user/pass
+
+        return Credential.objects.create(
+            credential_type=ct,
+            inputs=inputs
+        )
+    return wrap
+
 
 
 def read_content(private_data_dir, raw_env, inventory_update):
@@ -129,6 +141,7 @@ def read_content(private_data_dir, raw_env, inventory_update):
     return a dictionary `content` with file contents, keyed off environment variable
         that references the file
     """
+    # build dict env as a mapping of environment variables to file names
     # Filter out environment variables which come from runtime environment
     env = {}
     exclude_keys = set(('PATH', 'INVENTORY_SOURCE_ID', 'INVENTORY_UPDATE_ID'))
@@ -142,71 +155,74 @@ def read_content(private_data_dir, raw_env, inventory_update):
             env[k] = v
     inverse_env = {}
     for key, value in env.items():
-        inverse_env[value] = key
+        inverse_env.setdefault(value, []).append(key)
 
     cache_file_regex = re.compile(r'/tmp/awx_{0}_[a-zA-Z0-9_]+/{1}_cache[a-zA-Z0-9_]+'.format(
         inventory_update.id, inventory_update.source)
     )
     private_key_regex = re.compile(r'-----BEGIN ENCRYPTED PRIVATE KEY-----.*-----END ENCRYPTED PRIVATE KEY-----')
 
+    # read directory content
+    # build a mapping of the file paths to aliases which will be constant accross runs
     dir_contents = {}
-    references = {}
-    for filename in os.listdir(private_data_dir):
+    referenced_paths = set()
+    file_aliases = {}
+    filename_list = sorted(os.listdir(private_data_dir), key=lambda fn: inverse_env.get(os.path.join(private_data_dir, fn), [fn])[0])
+    for filename in filename_list:
         if filename in ('args', 'project'):
             continue  # Ansible runner
         abs_file_path = os.path.join(private_data_dir, filename)
+        file_aliases[abs_file_path] = filename
         if abs_file_path in inverse_env:
-            env_key = inverse_env[abs_file_path]
-            references[abs_file_path] = env_key
-            env[env_key] = '{{ file_reference }}'
+            referenced_paths.add(abs_file_path)
+            alias = 'file_reference'
+            for i in range(10):
+                if alias not in file_aliases.values():
+                    break
+                alias = 'file_reference_{}'.format(i)
+            else:
+                raise RuntimeError('Test not able to cope with >10 references by env vars. '
+                                   'Something probably went very wrong.')
+            file_aliases[abs_file_path] = alias
+            for env_key in inverse_env[abs_file_path]:
+                env[env_key] = '{{{{ {} }}}}'.format(alias)
         try:
             with open(abs_file_path, 'r') as f:
                 dir_contents[abs_file_path] = f.read()
             # Declare a reference to inventory plugin file if it exists
             if abs_file_path.endswith('.yml') and 'plugin: ' in dir_contents[abs_file_path]:
-                references[abs_file_path] = filename  # plugin filenames are universal
+                referenced_paths.add(abs_file_path)  # used as inventory file
+            elif cache_file_regex.match(abs_file_path):
+                file_aliases[abs_file_path] = 'cache_file'
         except IsADirectoryError:
             dir_contents[abs_file_path] = '<directory>'
+            if cache_file_regex.match(abs_file_path):
+                file_aliases[abs_file_path] = 'cache_dir'
 
-    # Declare cross-file references, also use special keywords if it is the cache
-    cache_referenced = False
-    cache_present = False
+    # Substitute in aliases for cross-file references
     for abs_file_path, file_content in dir_contents.copy().items():
         if cache_file_regex.match(file_content):
-            cache_referenced = True
+            if 'cache_dir' not in file_aliases.values() and 'cache_file' not in file_aliases in file_aliases.values():
+                raise AssertionError(
+                    'A cache file was referenced but never created, files:\n{}'.format(
+                        json.dumps(dir_contents, indent=4)))
+        # if another files path appears in this file, replace it with its alias
         for target_path in dir_contents.keys():
+            other_alias = file_aliases[target_path]
             if target_path in file_content:
-                if target_path in references:
-                    raise AssertionError(
-                        'File {} is referenced by env var or other file as well as file {}:\n{}\n{}'.format(
-                            target_path, abs_file_path, json.dumps(env, indent=4), json.dumps(dir_contents, indent=4)))
-                else:
-                    if cache_file_regex.match(target_path):
-                        cache_present = True
-                        if os.path.isdir(target_path):
-                            keyword = 'cache_dir'
-                        else:
-                            keyword = 'cache_file'
-                        references[target_path] = keyword
-                        new_file_content = cache_file_regex.sub('{{ ' + keyword + ' }}', file_content)
-                    else:
-                        references[target_path] = 'file_reference'
-                        new_file_content = file_content.replace(target_path, '{{ file_reference }}')
-                    dir_contents[abs_file_path] = new_file_content
-    if cache_referenced and not cache_present:
-        raise AssertionError(
-            'A cache file was referenced but never created, files:\n{}'.format(
-                json.dumps(dir_contents, indent=4)))
+                referenced_paths.add(target_path)
+                dir_contents[abs_file_path] = file_content.replace(target_path, '{{ ' + other_alias + ' }}')
 
+    # build dict content which is the directory contents keyed off the file aliases
     content = {}
     for abs_file_path, file_content in dir_contents.items():
-        if abs_file_path not in references:
+        # assert that all files laid down are used
+        if abs_file_path not in referenced_paths:
             raise AssertionError(
                 "File {} is not referenced. References and files:\n{}\n{}".format(
-                    abs_file_path, json.dumps(references, indent=4), json.dumps(dir_contents, indent=4)))
-        reference_key = references[abs_file_path]
+                    abs_file_path, json.dumps(env, indent=4), json.dumps(dir_contents, indent=4)))
         file_content = private_key_regex.sub('{{private_key}}', file_content)
-        content[reference_key] = file_content
+        content[file_aliases[abs_file_path]] = file_content
 
     return (env, content)
 
@@ -223,13 +239,12 @@ def create_reference_data(source_dir, env, content):
                 f.write(content)
     if env:
         with open(os.path.join(source_dir, 'env.json'), 'w') as f:
-            f.write(json.dumps(env, indent=4))
+            json.dump(env, f, indent=4, sort_keys=True)
 
 
 @pytest.mark.django_db
 @pytest.mark.parametrize('this_kind', CLOUD_PROVIDERS)
-@pytest.mark.parametrize('script_or_plugin', ['scripts', 'plugins'])
-def test_inventory_update_injected_content(this_kind, script_or_plugin, inventory):
+def test_inventory_update_injected_content(this_kind, inventory, fake_credential_factory):
     src_vars = dict(base_source_var='value_of_var')
     if this_kind in INI_TEST_VARS:
         src_vars.update(INI_TEST_VARS[this_kind])
@@ -246,8 +261,7 @@ def test_inventory_update_injected_content(this_kind, script_or_plugin, inventor
     inventory_update = inventory_source.create_unified_job()
     task = RunInventoryUpdate()
 
-    use_plugin = bool(script_or_plugin == 'plugins')
-    if use_plugin and InventorySource.injectors[this_kind].plugin_name is None:
+    if InventorySource.injectors[this_kind].plugin_name is None:
         pytest.skip('Use of inventory plugin is not enabled for this source')
 
     def substitute_run(envvars=None, **_kw):
@@ -257,10 +271,11 @@ def test_inventory_update_injected_content(this_kind, script_or_plugin, inventor
         If MAKE_INVENTORY_REFERENCE_FILES is set, it will produce reference files
         """
         private_data_dir = envvars.pop('AWX_PRIVATE_DATA_DIR')
-        assert envvars.pop('ANSIBLE_INVENTORY_ENABLED') == ('auto' if use_plugin else 'script')
+        assert envvars.pop('ANSIBLE_INVENTORY_ENABLED') == 'auto'
         set_files = bool(os.getenv("MAKE_INVENTORY_REFERENCE_FILES", 'false').lower()[0] not in ['f', '0'])
         env, content = read_content(private_data_dir, envvars, inventory_update)
-        base_dir = os.path.join(DATA, script_or_plugin)
+        env.pop('ANSIBLE_COLLECTIONS_PATHS', None)  # collection paths not relevant to this test
+        base_dir = os.path.join(DATA, 'plugins')
         if not os.path.exists(base_dir):
             os.mkdir(base_dir)
         source_dir = os.path.join(base_dir, this_kind)  # this_kind is a global
@@ -283,7 +298,7 @@ def test_inventory_update_injected_content(this_kind, script_or_plugin, inventor
             for f_name in expected_file_list:
                 with open(os.path.join(files_dir, f_name), 'r') as f:
                     ref_content = f.read()
-                    assert ref_content == content[f_name]
+                    assert ref_content == content[f_name], f_name
             try:
                 with open(os.path.join(source_dir, 'env.json'), 'r') as f:
                     ref_env_text = f.read()
@@ -294,20 +309,13 @@ def test_inventory_update_injected_content(this_kind, script_or_plugin, inventor
         Res = namedtuple('Result', ['status', 'rc'])
         return Res('successful', 0)
 
-    mock_licenser = mock.Mock(return_value=mock.Mock(
-        validate=mock.Mock(return_value={'license_type': 'open'})
-    ))
-
     # Mock this so that it will not send events to the callback receiver
     # because doing so in pytest land creates large explosions
     with mock.patch('awx.main.queue.CallbackQueueDispatcher.dispatch', lambda self, obj: None):
-        # Force the update to use the script injector
-        with mock.patch('awx.main.models.inventory.PluginFileInjector.should_use_plugin', return_value=use_plugin):
-            # Also do not send websocket status updates
-            with mock.patch.object(UnifiedJob, 'websocket_emit_status', mock.Mock()):
+        # Also do not send websocket status updates
+        with mock.patch.object(UnifiedJob, 'websocket_emit_status', mock.Mock()):
+            with mock.patch.object(task, 'get_ansible_version', return_value='2.13'):
                 # The point of this test is that we replace run with assertions
                 with mock.patch('awx.main.tasks.ansible_runner.interface.run', substitute_run):
-                    # mocking the licenser is necessary for the tower source
-                    with mock.patch('awx.main.models.inventory.get_licenser', mock_licenser):
-                        # so this sets up everything for a run and then yields control over to substitute_run
-                        task.run(inventory_update.pk)
+                    # so this sets up everything for a run and then yields control over to substitute_run
+                    task.run(inventory_update.pk)

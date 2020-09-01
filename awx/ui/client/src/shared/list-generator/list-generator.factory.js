@@ -147,7 +147,7 @@ export default ['$compile', 'Attr', 'Icon',
                         html += "</div>";
                         if (options.cancelButton === true) {
                             html += "<div class=\"Form-exitHolder\">";
-                            html += "<button class=\"Form-exit\" ng-click=\"formCancel()\">";
+                            html += "<button aria-label=\"{{'Close'|translate}}\" class=\"Form-exit\" ng-click=\"formCancel()\">";
                             html += "<i class=\"fa fa-times-circle\"></i>";
                             html += "</button></div>\n";
                         }
@@ -157,7 +157,7 @@ export default ['$compile', 'Attr', 'Icon',
 
                 if (options.mode === 'edit' && list.editInstructions) {
                     html += "<div class=\"alert alert-info alert-block\">\n";
-                    html += "<button type=\"button\" class=\"close\" data-dismiss=\"alert\"><i class=\"fa fa-times-circle\"></i></button>\n";
+                    html += "<button aria-label=\"{{'Close'|translate}}\" type=\"button\" class=\"close\" data-dismiss=\"alert\"><i class=\"fa fa-times-circle\"></i></button>\n";
                     html += "<strong>Hint: </strong>" + list.editInstructions + "\n";
                     html += "</div>\n";
                 }
@@ -200,7 +200,7 @@ export default ['$compile', 'Attr', 'Icon',
                 if (options.showSearch === undefined || options.showSearch === true) {
                     let singleSearchParam = list.singleSearchParam && list.singleSearchParam.param ? `single-search-param="${list.singleSearchParam.param}"` : '';
                     html += `
-                    <div ng-hide="${list.name}.length === 0 && (searchTags | isEmpty)">
+                    <div ng-hide="!${list.alwaysShowSearch} && ${list.name}.length === 0 && (searchTags | isEmpty)">
                         <smart-search
                             django-model="${list.name}"
                             ${singleSearchParam}
@@ -244,7 +244,7 @@ export default ['$compile', 'Attr', 'Icon',
 
                 // Show the "no items" box when loading is done and the user isn't actively searching and there are no results
                 if (options.showEmptyPanel === undefined || options.showEmptyPanel === true){
-                    html += `<div class="List-noItems" ng-show="${list.name}.length === 0 && (searchTags | isEmpty)">`;
+                    html += `<div class="${list.emptyListClass || "List-noItems"}" ng-show="${list.name}.length === 0 && (searchTags | isEmpty)">`;
                     html += (list.emptyListText) ? list.emptyListText :  i18n._("PLEASE ADD ITEMS TO THIS LIST");
                     html += "</div>";
                 }
@@ -352,7 +352,7 @@ export default ['$compile', 'Attr', 'Icon',
                         innerTable += '<select-list-item item=\"' + list.iterator + '\" disabled="'+list.disableRowValue+'"></select-list-item>';
                     } else {
                         if (options.input_type === "radio") { //added by JT so that lookup forms can be either radio inputs or check box inputs
-                            innerTable += `<input type="radio" ng-model="${list.iterator}.checked" ng-value="1" ng-false-value="0" name="check_${list.iterator}_{{${list.iterator}.id}}" ng-click="toggle_row(${list.iterator})" ng-disabled="${list.disableRowValue}">`;
+                            innerTable += `<input type="radio" ng-model="${list.iterator}.checked" ng-value="1" ng-false-value="0" name="check_${list.iterator}_{{${list.iterator}.id}}" ng-click="toggle_row(${list.iterator})" ng-disabled="${list.disableRowValue}" />`;
                         }
                         else { // its assumed that options.input_type = checkbox
                             innerTable += "<input type=\"checkbox\" ng-model=\"" + list.iterator + ".checked\" name=\"check_{{" +
@@ -363,7 +363,7 @@ export default ['$compile', 'Attr', 'Icon',
                     innerTable += `</div>`;
                 }
 
-                innerTable += `<div class='d-flex h-100'>`;
+                innerTable += `<div class='d-flex h-100' style='min-width: 0;'>`;
 
                 if (list.index) {
                     innerTable += "<div class=\"d-none d-sm-flex index-column List-tableCell\">{{ $index + ((" + list.iterator + "_page - 1) * " + list.iterator + "_page_size) + 1 }}.</div>\n";
@@ -424,7 +424,7 @@ export default ['$compile', 'Attr', 'Icon',
                                 } else {
                                     fAction = list.fieldActions[field_action];
                                     innerTable += "<button id=\"";
-                                    innerTable += (fAction.id) ? fAction.id : field_action + "-action";
+                                    innerTable += (fAction.id) ? fAction.id : `${list.iterator}-{{${list.iterator}.id}}-${field_action}-action`;
                                     innerTable += "\" ";
                                     innerTable += (fAction.href) ? "href=\"" + fAction.href + "\" " : "";
                                     innerTable += (fAction.ngHref) ? "ng-href=\"" + fAction.ngHref + "\" " : "";
@@ -491,7 +491,7 @@ export default ['$compile', 'Attr', 'Icon',
 
                 if (options.mode === 'select' && (options.selectButton === undefined || options.selectButton)) {
                     html += "<div class=\"navigation-buttons\">\n";
-                    html += " <button class=\"btn btn-sm btn-primary pull-right\" id=\"select_btn\" aw-tool-tip=\"Complete your selection\" " +
+                    html += " <button aria-label=\"{{'Complete your selection'|translate}}\" class=\"btn btn-sm btn-primary pull-right\" id=\"select_btn\" aw-tool-tip=\"Complete your selection\" " +
                         "ng-click=\"finishSelection()\" ng-disabled=\"disableSelectBtn\"><i class=\"fa fa-check\"></i> Select</button>\n";
                     html += "</div>\n";
                 }
@@ -546,7 +546,9 @@ export default ['$compile', 'Attr', 'Icon',
                 for (fld in list.fields) {
                     if (options.mode !== 'lookup' || (options.mode === 'lookup' && (fld === 'name' || _.has(list.fields[fld], 'includeModal')))){
                         let customClass = list.fields[fld].columnClass || '';
+                        const ngIf = list.fields[fld].ngIf ? `ng-if="${list.fields[fld].ngIf}"` : '';
                         html += `<div
+                            ${ngIf}
                             base-path="${list.basePath || list.name}"
                             collection="${list.name}"
                             dataset="${list.iterator}_dataset"
@@ -556,6 +558,7 @@ export default ['$compile', 'Attr', 'Icon',
                             column-no-sort="${list.fields[fld].nosort}"
                             column-label="${list.fields[fld].label}"
                             column-custom-class="${customClass}"
+                            ng-class="${list.fields[fld].columnNgClass || `{'list-header-noSort': ${list.fields[fld].nosort ? true : false}}`}"
                             query-set="${list.iterator}_queryset">
                         </div>`;
                     }

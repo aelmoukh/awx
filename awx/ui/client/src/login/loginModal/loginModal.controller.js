@@ -39,14 +39,14 @@
  * This is usage information.
  */
 
-export default ['$log', '$cookies', '$compile', '$rootScope',
+export default ['$log', '$cookies', '$rootScope', 'ProcessErrors',
     '$location', 'Authorization', 'Alert', 'Wait', 'Timer',
     'Empty', '$scope', 'pendoService', 'ConfigService',
-    'CheckLicense', 'SocketService',
-    function ($log, $cookies, $compile, $rootScope, $location,
-        Authorization, Alert, Wait, Timer, Empty,
-        scope, pendoService, ConfigService, CheckLicense,
-        SocketService) {
+    'CheckLicense', 'SocketService', 'Rest', 'GetBasePath', 'i18n',
+    function ($log, $cookies, $rootScope, ProcessErrors,
+        $location, Authorization, Alert, Wait, Timer,
+        Empty, scope, pendoService, ConfigService,
+        CheckLicense, SocketService, Rest, GetBasePath, i18n) {
     var lastPath, lastUser, sessionExpired, loginAgain, preAuthUrl;
 
     loginAgain = function() {
@@ -88,6 +88,7 @@ export default ['$log', '$cookies', '$compile', '$rootScope',
         }
         scope.customLoginInfo = $AnsibleConfig.custom_login_info;
         scope.customLoginInfoPresent = (scope.customLoginInfo) ? true : false;
+        scope.customLoginInfoIsHTML = /<\/?[a-z][\s\S]*>/i.test(scope.customLoginInfo);
     });
 
     if (scope.removeAuthorizationGetLicense) {
@@ -132,6 +133,18 @@ export default ['$log', '$cookies', '$compile', '$rootScope',
                     $rootScope.user_is_system_auditor = data.results[0].is_system_auditor;
                     scope.$emit('AuthorizationGetLicense');
                 });
+
+                Rest.setUrl(`${GetBasePath('workflow_approvals')}?status=pending&page_size=1`);
+                Rest.get()
+                    .then(({data}) => {
+                        $rootScope.pendingApprovalCount = data.count;
+                    })
+                    .catch(({data, status}) => {
+                        ProcessErrors({}, data, status, null, {
+                            hdr: i18n._('Error!'),
+                            msg: i18n._('Failed to get workflow jobs pending approval. GET returned status: ') + status
+                        });
+                    });
             })
             .catch(({data, status}) => {
                 Authorization.logout().then( () => {

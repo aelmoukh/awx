@@ -13,12 +13,13 @@ from urllib.parse import urljoin
 
 # Django
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 #from django.core.cache import cache
 from django.utils.encoding import smart_str
 from django.utils.timezone import now
 from django.utils.translation import ugettext_lazy as _
-from django.core.exceptions import ValidationError, FieldDoesNotExist
+from django.core.exceptions import FieldDoesNotExist
 
 # REST Framework
 from rest_framework.exceptions import ParseError
@@ -27,8 +28,8 @@ from rest_framework.exceptions import ParseError
 from awx.api.versioning import reverse
 from awx.main.models.base import (
     BaseModel, CreatedModifiedModel,
-    prevent_search,
-    JOB_TYPE_CHOICES, VERBOSITY_CHOICES,
+    prevent_search, accepts_json,
+    JOB_TYPE_CHOICES, NEW_JOB_TYPE_CHOICES, VERBOSITY_CHOICES,
     VarsDictProperty
 )
 from awx.main.models.events import JobEvent, SystemJobEvent
@@ -39,7 +40,7 @@ from awx.main.models.notifications import (
     NotificationTemplate,
     JobNotificationMixin,
 )
-from awx.main.utils import parse_yaml_or_json, getattr_dne
+from awx.main.utils import parse_yaml_or_json, getattr_dne, NullablePromptPseudoField
 from awx.main.fields import ImplicitRoleField, JSONField, AskForField
 from awx.main.models.mixins import (
     ResourceMixin,
@@ -48,6 +49,8 @@ from awx.main.models.mixins import (
     TaskManagerJobMixin,
     CustomVirtualEnvMixin,
     RelatedJobsMixin,
+    WebhookMixin,
+    WebhookTemplateMixin,
 )
 
 
@@ -96,6 +99,13 @@ class JobOptions(BaseModel):
         default='',
         blank=True,
     )
+    scm_branch = models.CharField(
+        max_length=1024,
+        default='',
+        blank=True,
+        help_text=_('Branch to use in job run. Project default used if blank. '
+                    'Only allowed if project allow_override field is set to true.'),
+    )
     forks = models.PositiveIntegerField(
         blank=True,
         default=0,
@@ -109,10 +119,10 @@ class JobOptions(BaseModel):
         blank=True,
         default=0,
     )
-    extra_vars = prevent_search(models.TextField(
+    extra_vars = prevent_search(accepts_json(models.TextField(
         blank=True,
         default='',
-    ))
+    )))
     job_tags = models.CharField(
         max_length=1024,
         blank=True,
@@ -152,21 +162,9 @@ class JobOptions(BaseModel):
 
     extra_vars_dict = VarsDictProperty('extra_vars', True)
 
-    def clean_credential(self):
-        cred = self.credential
-        if cred and cred.kind != 'ssh':
-            raise ValidationError(
-                _('You must provide an SSH credential.'),
-            )
-        return cred
-
-    def clean_vault_credential(self):
-        cred = self.vault_credential
-        if cred and cred.kind != 'vault':
-            raise ValidationError(
-                _('You must provide a Vault credential.'),
-            )
-        return cred
+    @property
+    def machine_credential(self):
+        return self.credentials.filter(credential_type__kind='ssh').first()
 
     @property
     def network_credentials(self):
@@ -181,41 +179,6 @@ class JobOptions(BaseModel):
         return list(self.credentials.filter(credential_type__kind='vault'))
 
     @property
-    def credential(self):
-        cred = self.get_deprecated_credential('ssh')
-        if cred is not None:
-            return cred.pk
-
-    @property
-    def vault_credential(self):
-        cred = self.get_deprecated_credential('vault')
-        if cred is not None:
-            return cred.pk
-
-    def get_deprecated_credential(self, kind):
-        for cred in self.credentials.all():
-            if cred.credential_type.kind == kind:
-                return cred
-        else:
-            return None
-
-    # TODO: remove when API v1 is removed
-    @property
-    def cloud_credential(self):
-        try:
-            return self.cloud_credentials[-1].pk
-        except IndexError:
-            return None
-
-    # TODO: remove when API v1 is removed
-    @property
-    def network_credential(self):
-        try:
-            return self.network_credentials[-1].pk
-        except IndexError:
-            return None
-
-    @property
     def passwords_needed_to_start(self):
         '''Return list of password field names needed to start the job.'''
         needed = []
@@ -227,7 +190,7 @@ class JobOptions(BaseModel):
         return needed
 
 
-class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, ResourceMixin, CustomVirtualEnvMixin, RelatedJobsMixin):
+class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, ResourceMixin, CustomVirtualEnvMixin, RelatedJobsMixin, WebhookTemplateMixin):
     '''
     A job template is a reusable job definition for applying a project (with
     playbook) to an inventory source with a given credential.
@@ -236,12 +199,17 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
         'labels', 'instance_groups', 'credentials', 'survey_spec'
     ]
     FIELDS_TO_DISCARD_AT_COPY = ['vault_credential', 'credential']
-    SOFT_UNIQUE_TOGETHER = [('polymorphic_ctype', 'name')]
+    SOFT_UNIQUE_TOGETHER = [('polymorphic_ctype', 'name', 'organization')]
 
     class Meta:
         app_label = 'main'
         ordering = ('name',)
 
+    job_type = models.CharField(
+        max_length=64,
+        choices=NEW_JOB_TYPE_CHOICES,
+        default='run',
+    )
     host_config_key = prevent_search(models.CharField(
         max_length=1024,
         blank=True,
@@ -281,6 +249,11 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
         default=False,
         allows_field='credentials'
     )
+    ask_scm_branch_on_launch = AskForField(
+        blank=True,
+        default=False,
+        allows_field='scm_branch'
+    )
     job_slice_count = models.PositiveIntegerField(
         blank=True,
         default=1,
@@ -289,13 +262,17 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
     )
 
     admin_role = ImplicitRoleField(
-        parent_role=['project.organization.job_template_admin_role', 'inventory.organization.job_template_admin_role']
+        parent_role=['organization.job_template_admin_role']
     )
     execute_role = ImplicitRoleField(
-        parent_role=['admin_role', 'project.organization.execute_role', 'inventory.organization.execute_role'],
+        parent_role=['admin_role', 'organization.execute_role'],
     )
     read_role = ImplicitRoleField(
-        parent_role=['project.organization.auditor_role', 'inventory.organization.auditor_role', 'execute_role', 'admin_role'],
+        parent_role=[
+            'organization.auditor_role',
+            'inventory.organization.auditor_role',  # partial support for old inheritance via inventory
+            'execute_role', 'admin_role'
+        ],
     )
 
 
@@ -306,7 +283,7 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
     @classmethod
     def _get_unified_job_field_names(cls):
         return set(f.name for f in JobOptions._meta.fields) | set(
-            ['name', 'description', 'schedule', 'survey_passwords', 'labels', 'credentials',
+            ['name', 'description', 'organization', 'survey_passwords', 'labels', 'credentials',
              'job_slice_number', 'job_slice_count']
         )
 
@@ -326,6 +303,11 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
     def resources_needed_to_start(self):
         return [fd for fd in ['project', 'inventory'] if not getattr(self, '{}_id'.format(fd))]
 
+    def clean_forks(self):
+        if settings.MAX_FORKS > 0 and self.forks > settings.MAX_FORKS:
+            raise ValidationError(_(f'Maximum number of forks ({settings.MAX_FORKS}) exceeded.'))
+        return self.forks
+
     def create_job(self, **kwargs):
         '''
         Create a new job based on this template.
@@ -340,6 +322,41 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
             return min(self.job_slice_count, actual_inventory.hosts.count())
         else:
             return self.job_slice_count
+
+    def save(self, *args, **kwargs):
+        update_fields = kwargs.get('update_fields', [])
+        # if project is deleted for some reason, then keep the old organization
+        # to retain ownership for organization admins
+        if self.project and self.project.organization_id != self.organization_id:
+            self.organization_id = self.project.organization_id
+            if 'organization' not in update_fields and 'organization_id' not in update_fields:
+                update_fields.append('organization_id')
+        return super(JobTemplate, self).save(*args, **kwargs)
+
+    def validate_unique(self, exclude=None):
+        """Custom over-ride for JT specifically
+        because organization is inferred from project after full_clean is finished
+        thus the organization field is not yet set when validation happens
+        """
+        errors = []
+        for ut in JobTemplate.SOFT_UNIQUE_TOGETHER:
+            kwargs = {'name': self.name}
+            if self.project:
+                kwargs['organization'] = self.project.organization_id
+            else:
+                kwargs['organization'] = None
+            qs = JobTemplate.objects.filter(**kwargs)
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                errors.append(
+                    '%s with this (%s) combination already exists.' % (
+                        JobTemplate.__name__,
+                        ', '.join(set(ut) - {'polymorphic_ctype'})
+                    )
+                )
+        if errors:
+            raise ValidationError(errors)
 
     def create_unified_job(self, **kwargs):
         prevent_slicing = kwargs.pop('_prevent_slicing', False)
@@ -422,19 +439,29 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
             field = self._meta.get_field(field_name)
             if isinstance(field, models.ManyToManyField):
                 old_value = set(old_value.all())
-                if getattr(self, '_deprecated_credential_launch', False):
-                    # TODO: remove this code branch when support for `extra_credentials` goes away
-                    new_value = set(kwargs[field_name])
-                else:
-                    new_value = set(kwargs[field_name]) - old_value
-                    if not new_value:
-                        continue
+                new_value = set(kwargs[field_name]) - old_value
+                if not new_value:
+                    continue
 
             if new_value == old_value:
                 # no-op case: Fields the same as template's value
                 # counted as neither accepted or ignored
                 continue
+            elif field_name == 'scm_branch' and old_value == '' and self.project and new_value == self.project.scm_branch:
+                # special case of "not provided" for branches
+                # job template does not provide branch, runs with default branch
+                continue
             elif getattr(self, ask_field_name):
+                # Special case where prompts can be rejected based on project setting
+                if field_name == 'scm_branch':
+                    if not self.project:
+                        rejected_data[field_name] = new_value
+                        errors_dict[field_name] = _('Project is missing.')
+                        continue
+                    if kwargs['scm_branch'] != self.project.scm_branch and not self.project.allow_override:
+                        rejected_data[field_name] = new_value
+                        errors_dict[field_name] = _('Project does not allow override of branch.')
+                        continue
                 # accepted prompt
                 prompted_data[field_name] = new_value
             else:
@@ -443,7 +470,7 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
                 # Not considered an error for manual launch, to support old
                 # behavior of putting them in ignored_fields and launching anyway
                 if 'prompts' not in exclude_errors:
-                    errors_dict[field_name] = _('Field is not configured to prompt on launch.').format(field_name=field_name)
+                    errors_dict[field_name] = _('Field is not configured to prompt on launch.')
 
         if ('prompts' not in exclude_errors and
                 (not getattr(self, 'ask_credential_on_launch', False)) and
@@ -482,19 +509,21 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
         base_notification_templates = NotificationTemplate.objects
         error_notification_templates = list(base_notification_templates.filter(
             unifiedjobtemplate_notification_templates_for_errors__in=[self, self.project]))
+        started_notification_templates = list(base_notification_templates.filter(
+            unifiedjobtemplate_notification_templates_for_started__in=[self, self.project]))
         success_notification_templates = list(base_notification_templates.filter(
             unifiedjobtemplate_notification_templates_for_success__in=[self, self.project]))
-        any_notification_templates = list(base_notification_templates.filter(
-            unifiedjobtemplate_notification_templates_for_any__in=[self, self.project]))
         # Get Organization NotificationTemplates
-        if self.project is not None and self.project.organization is not None:
+        if self.organization is not None:
             error_notification_templates = set(error_notification_templates + list(base_notification_templates.filter(
-                organization_notification_templates_for_errors=self.project.organization)))
+                organization_notification_templates_for_errors=self.organization)))
+            started_notification_templates = set(started_notification_templates + list(base_notification_templates.filter(
+                organization_notification_templates_for_started=self.organization)))
             success_notification_templates = set(success_notification_templates + list(base_notification_templates.filter(
-                organization_notification_templates_for_success=self.project.organization)))
-            any_notification_templates = set(any_notification_templates + list(base_notification_templates.filter(
-                organization_notification_templates_for_any=self.project.organization)))
-        return dict(error=list(error_notification_templates), success=list(success_notification_templates), any=list(any_notification_templates))
+                organization_notification_templates_for_success=self.organization)))
+        return dict(error=list(error_notification_templates),
+                    started=list(started_notification_templates),
+                    success=list(success_notification_templates))
 
     '''
     RelatedJobsMixin
@@ -503,7 +532,7 @@ class JobTemplate(UnifiedJobTemplate, JobOptions, SurveyJobTemplateMixin, Resour
         return UnifiedJob.objects.filter(unified_job_template=self)
 
 
-class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskManagerJobMixin, CustomVirtualEnvMixin):
+class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskManagerJobMixin, CustomVirtualEnvMixin, WebhookMixin):
     '''
     A job applies a project (with playbook) to an inventory source with a given
     credential.  It represents a single invocation of ansible-playbook with the
@@ -530,7 +559,7 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
     )
     artifacts = JSONField(
         blank=True,
-        default={},
+        default=dict,
         editable=False,
     )
     scm_revision = models.CharField(
@@ -594,7 +623,7 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
         for virtualenv in (
             self.job_template.custom_virtualenv if self.job_template else None,
             self.project.custom_virtualenv,
-            self.project.organization.custom_virtualenv if self.project.organization else None
+            self.organization.custom_virtualenv if self.organization else None
         ):
             if virtualenv:
                 return virtualenv
@@ -646,15 +675,17 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
 
     @property
     def task_impact(self):
-        # NOTE: We sorta have to assume the host count matches and that forks default to 5
-        from awx.main.models.inventory import Host
         if self.launch_type == 'callback':
             count_hosts = 2
         else:
-            count_hosts = Host.objects.filter(inventory__jobs__pk=self.pk).count()
-            if self.job_slice_count > 1:
-                # Integer division intentional
-                count_hosts = (count_hosts + self.job_slice_count - self.job_slice_number) // self.job_slice_count
+            # If for some reason we can't count the hosts then lets assume the impact as forks
+            if self.inventory is not None:
+                count_hosts = self.inventory.total_hosts
+                if self.job_slice_count > 1:
+                    # Integer division intentional
+                    count_hosts = (count_hosts + self.job_slice_count - self.job_slice_number) // self.job_slice_count
+            else:
+                count_hosts = 5 if self.forks == 0 else self.forks
         return min(count_hosts, 5 if self.forks == 0 else self.forks) + 1
 
     @property
@@ -685,11 +716,19 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
     def processed_hosts(self):
         return self._get_hosts(job_host_summaries__processed__gt=0)
 
+    @property
+    def ignored_hosts(self):
+        return self._get_hosts(job_host_summaries__ignored__gt=0)
+
+    @property
+    def rescued_hosts(self):
+        return self._get_hosts(job_host_summaries__rescued__gt=0)
+
     def notification_data(self, block=5):
         data = super(Job, self).notification_data()
         all_hosts = {}
         # NOTE: Probably related to job event slowness, remove at some point -matburt
-        if block:
+        if block and self.status != 'running':
             summaries = self.job_host_summaries.all()
             while block > 0 and not len(summaries):
                 time.sleep(1)
@@ -703,11 +742,13 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
                                           failures=h.failures,
                                           ok=h.ok,
                                           processed=h.processed,
-                                          skipped=h.skipped)
+                                          skipped=h.skipped,
+                                          rescued=h.rescued,
+                                          ignored=h.ignored)
         data.update(dict(inventory=self.inventory.name if self.inventory else None,
                          project=self.project.name if self.project else None,
                          playbook=self.playbook,
-                         credential=getattr(self.get_deprecated_credential('ssh'), 'name', None),
+                         credential=getattr(self.machine_credential, 'name', None),
                          limit=self.limit,
                          extra_vars=self.display_extra_vars(),
                          hosts=all_hosts))
@@ -726,9 +767,17 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
         return artifacts
 
     @property
+    def can_run_containerized(self):
+        return any([ig for ig in self.preferred_instance_groups if ig.is_containerized])
+
+    @property
+    def is_containerized(self):
+        return bool(self.instance_group and self.instance_group.is_containerized)
+
+    @property
     def preferred_instance_groups(self):
-        if self.project is not None and self.project.organization is not None:
-            organization_groups = [x for x in self.project.organization.instance_groups.all()]
+        if self.organization is not None:
+            organization_groups = [x for x in self.organization.instance_groups.all()]
         else:
             organization_groups = []
         if self.inventory is not None:
@@ -815,8 +864,10 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
                             continue
                         host.ansible_facts = ansible_facts
                         host.ansible_facts_modified = now()
-                        ansible_local_system_id = ansible_facts.get('ansible_local', {}).get('insights', {}).get('system_id', None)
-                        ansible_facts_system_id = ansible_facts.get('insights', {}).get('system_id', None)
+                        ansible_local = ansible_facts.get('ansible_local', {}).get('insights', {})
+                        ansible_facts = ansible_facts.get('insights', {})
+                        ansible_local_system_id = ansible_local.get('system_id', None) if isinstance(ansible_local, dict) else None
+                        ansible_facts_system_id = ansible_facts.get('system_id', None) if isinstance(ansible_facts, dict) else None
                         if ansible_local_system_id:
                             print("Setting local {}".format(ansible_local_system_id))
                             logger.debug("Insights system_id {} found for host <{}, {}> in"
@@ -848,25 +899,6 @@ class Job(UnifiedJob, JobOptions, SurveyJobMixin, JobNotificationMixin, TaskMana
                 host.save()
 
 
-# Add on aliases for the non-related-model fields
-class NullablePromptPsuedoField(object):
-    """
-    Interface for psuedo-property stored in `char_prompts` dict
-    Used in LaunchTimeConfig and submodels
-    """
-    def __init__(self, field_name):
-        self.field_name = field_name
-
-    def __get__(self, instance, type=None):
-        return instance.char_prompts.get(self.field_name, None)
-
-    def __set__(self, instance, value):
-        if value in (None, {}):
-            instance.char_prompts.pop(self.field_name, None)
-        else:
-            instance.char_prompts[self.field_name] = value
-
-
 class LaunchTimeConfigBase(BaseModel):
     '''
     Needed as separate class from LaunchTimeConfig because some models
@@ -887,12 +919,13 @@ class LaunchTimeConfigBase(BaseModel):
         null=True,
         default=None,
         on_delete=models.SET_NULL,
+        help_text=_('Inventory applied as a prompt, assuming job template prompts for inventory')
     )
     # All standard fields are stored in this dictionary field
     # This is a solution to the nullable CharField problem, specific to prompting
     char_prompts = JSONField(
         blank=True,
-        default={}
+        default=dict
     )
 
     def prompts_dict(self, display=False):
@@ -915,6 +948,9 @@ class LaunchTimeConfigBase(BaseModel):
                         data[prompt_name] = self.display_extra_vars()
                     else:
                         data[prompt_name] = self.extra_vars
+                    # Depending on model, field type may save and return as string
+                    if isinstance(data[prompt_name], str):
+                        data[prompt_name] = parse_yaml_or_json(data[prompt_name])
                 if self.survey_passwords and not display:
                     data['survey_passwords'] = self.survey_passwords
             else:
@@ -923,42 +959,14 @@ class LaunchTimeConfigBase(BaseModel):
                     data[prompt_name] = prompt_val
         return data
 
-    def display_extra_vars(self):
-        '''
-        Hides fields marked as passwords in survey.
-        '''
-        if self.survey_passwords:
-            extra_vars = parse_yaml_or_json(self.extra_vars).copy()
-            for key, value in self.survey_passwords.items():
-                if key in extra_vars:
-                    extra_vars[key] = value
-            return extra_vars
-        else:
-            return self.extra_vars
 
-    def display_extra_data(self):
-        return self.display_extra_vars()
-
-    @property
-    def _credential(self):
-        '''
-        Only used for workflow nodes to support backward compatibility.
-        '''
-        try:
-            return [cred for cred in self.credentials.all() if cred.credential_type.kind == 'ssh'][0]
-        except IndexError:
-            return None
-
-    @property
-    def credential(self):
-        '''
-        Returns an integer so it can be used as IntegerField in serializer
-        '''
-        cred = self._credential
-        if cred is not None:
-            return cred.pk
-        else:
-            return None
+for field_name in JobTemplate.get_ask_mapping().keys():
+    if field_name == 'extra_vars':
+        continue
+    try:
+        LaunchTimeConfigBase._meta.get_field(field_name)
+    except FieldDoesNotExist:
+        setattr(LaunchTimeConfigBase, field_name, NullablePromptPseudoField(field_name))
 
 
 class LaunchTimeConfig(LaunchTimeConfigBase):
@@ -972,11 +980,11 @@ class LaunchTimeConfig(LaunchTimeConfigBase):
     # Special case prompting fields, even more special than the other ones
     extra_data = JSONField(
         blank=True,
-        default={}
+        default=dict
     )
     survey_passwords = prevent_search(JSONField(
         blank=True,
-        default={},
+        default=dict,
         editable=False,
     ))
     # Credentials needed for non-unified job / unified JT models
@@ -993,14 +1001,21 @@ class LaunchTimeConfig(LaunchTimeConfigBase):
     def extra_vars(self, extra_vars):
         self.extra_data = extra_vars
 
+    def display_extra_vars(self):
+        '''
+        Hides fields marked as passwords in survey.
+        '''
+        if hasattr(self, 'survey_passwords') and self.survey_passwords:
+            extra_vars = parse_yaml_or_json(self.extra_vars).copy()
+            for key, value in self.survey_passwords.items():
+                if key in extra_vars:
+                    extra_vars[key] = value
+            return extra_vars
+        else:
+            return self.extra_vars
 
-for field_name in JobTemplate.get_ask_mapping().keys():
-    if field_name == 'extra_vars':
-        continue
-    try:
-        LaunchTimeConfig._meta.get_field(field_name)
-    except FieldDoesNotExist:
-        setattr(LaunchTimeConfig, field_name, NullablePromptPsuedoField(field_name))
+    def display_extra_data(self):
+        return self.display_extra_vars()
 
 
 class JobLaunchConfig(LaunchTimeConfig):
@@ -1093,7 +1108,7 @@ class JobHostSummary(CreatedModifiedModel):
     processed = models.PositiveIntegerField(default=0, editable=False)
     rescued = models.PositiveIntegerField(default=0, editable=False)
     skipped = models.PositiveIntegerField(default=0, editable=False)
-    failed = models.BooleanField(default=False, editable=False)
+    failed = models.BooleanField(default=False, editable=False, db_index=True)
 
     def __str__(self):
         host = getattr_dne(self, 'host')
@@ -1114,21 +1129,6 @@ class JobHostSummary(CreatedModifiedModel):
         self.failed = bool(self.dark or self.failures)
         update_fields.append('failed')
         super(JobHostSummary, self).save(*args, **kwargs)
-        self.update_host_last_job_summary()
-
-    def update_host_last_job_summary(self):
-        update_fields = []
-        if self.host is None:
-            return
-        if self.host.last_job_id != self.job_id:
-            self.host.last_job_id = self.job_id
-            update_fields.append('last_job_id')
-        if self.host.last_job_host_summary_id != self.id:
-            self.host.last_job_host_summary_id = self.id
-            update_fields.append('last_job_host_summary_id')
-        if update_fields:
-            self.host.save(update_fields=update_fields)
-        #self.host.update_computed_fields()
 
 
 class SystemJobOptions(BaseModel):
@@ -1139,7 +1139,8 @@ class SystemJobOptions(BaseModel):
     SYSTEM_JOB_TYPE = [
         ('cleanup_jobs', _('Remove jobs older than a certain number of days')),
         ('cleanup_activitystream', _('Remove activity stream entries older than a certain number of days')),
-        ('cleanup_facts', _('Purge and/or reduce the granularity of system tracking data')),
+        ('cleanup_sessions', _('Removes expired browser sessions from the database')),
+        ('cleanup_tokens', _('Removes expired OAuth 2 access tokens and refresh tokens'))
     ]
 
     class Meta:
@@ -1164,7 +1165,7 @@ class SystemJobTemplate(UnifiedJobTemplate, SystemJobOptions):
 
     @classmethod
     def _get_unified_job_field_names(cls):
-        return ['name', 'description', 'job_type', 'extra_vars']
+        return ['name', 'description', 'organization', 'job_type', 'extra_vars']
 
     def get_absolute_url(self, request=None):
         return reverse('api:system_job_template_detail', kwargs={'pk': self.pk}, request=request)
@@ -1179,13 +1180,13 @@ class SystemJobTemplate(UnifiedJobTemplate, SystemJobOptions):
         base_notification_templates = NotificationTemplate.objects.all()
         error_notification_templates = list(base_notification_templates
                                             .filter(unifiedjobtemplate_notification_templates_for_errors__in=[self]))
+        started_notification_templates = list(base_notification_templates
+                                              .filter(unifiedjobtemplate_notification_templates_for_started__in=[self]))
         success_notification_templates = list(base_notification_templates
                                               .filter(unifiedjobtemplate_notification_templates_for_success__in=[self]))
-        any_notification_templates = list(base_notification_templates
-                                          .filter(unifiedjobtemplate_notification_templates_for_any__in=[self]))
         return dict(error=list(error_notification_templates),
-                    success=list(success_notification_templates),
-                    any=list(any_notification_templates))
+                    started=list(started_notification_templates),
+                    success=list(success_notification_templates))
 
     def _accept_or_ignore_job_kwargs(self, _exclude_errors=None, **kwargs):
         extra_data = kwargs.pop('extra_vars', {})
@@ -1214,18 +1215,19 @@ class SystemJobTemplate(UnifiedJobTemplate, SystemJobOptions):
             for key in unallowed_vars:
                 rejected[key] = data.pop(key)
 
-        if 'days' in data:
-            try:
-                if type(data['days']) is bool:
-                    raise ValueError
-                if float(data['days']) != int(data['days']):
-                    raise ValueError
-                days = int(data['days'])
-                if days < 0:
-                    raise ValueError
-            except ValueError:
-                errors_list.append(_("days must be a positive integer."))
-                rejected['days'] = data.pop('days')
+        if self.job_type in ('cleanup_jobs', 'cleanup_activitystream'):
+            if 'days' in data:
+                try:
+                    if isinstance(data['days'], (bool, type(None))):
+                        raise ValueError
+                    if float(data['days']) != int(data['days']):
+                        raise ValueError
+                    days = int(data['days'])
+                    if days < 0:
+                        raise ValueError
+                except ValueError:
+                    errors_list.append(_("days must be a positive integer."))
+                    rejected['days'] = data.pop('days')
 
         if errors_list:
             errors['extra_vars'] = errors_list

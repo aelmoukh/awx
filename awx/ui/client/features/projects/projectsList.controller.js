@@ -113,11 +113,6 @@ function projectsListController (
                 // And we found the affected project
                 $log.debug(`Received event for project: ${project.name}`);
                 $log.debug(`Status changed to: ${data.status}`);
-                if (data.status === 'successful' || data.status === 'failed' || data.status === 'canceled') {
-                    reloadList();
-                } else {
-                    project.scm_update_tooltip = vm.strings.get('update.UPDATE_RUNNING');
-                }
                 project.status = data.status;
                 buildTooltips(project);
             }
@@ -322,7 +317,7 @@ function projectsListController (
                 if (data.related.current_update) {
                     cancelSCMUpdate(data);
                 } else {
-                    Alert(vm.strings.get('update.UPDATE_NOT_FOUND'), vm.strings.get('update.NO_RUNNING_UPDATE') + project.name, 'alert-info', undefined, undefined, undefined, undefined, true);
+                    Alert(vm.strings.get('update.UPDATE_NOT_FOUND'), vm.strings.get('update.NO_RUNNING_UPDATE') + $filter('sanitize')(project.name), 'alert-info', undefined, undefined, undefined, undefined, true);
                 }
             })
             .catch(createErrorHandler('get project', 'GET'));
@@ -353,7 +348,7 @@ function projectsListController (
     };
 
     function buildTooltips (project) {
-        project.statusIcon = getStatusIcon(project);
+        project.statusIcon = getJobStatusIcon(project);
         project.statusTip = getStatusTooltip(project);
         project.scm_update_tooltip = vm.strings.get('update.GET_LATEST');
         project.scm_update_disabled = false;
@@ -408,7 +403,7 @@ function projectsListController (
         };
     }
 
-    function getStatusIcon (project) {
+    function getJobStatusIcon (project) {
         let icon = 'none';
         switch (project.status) {
             case 'n/a':

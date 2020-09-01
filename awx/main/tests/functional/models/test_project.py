@@ -35,7 +35,25 @@ def test_sensitive_change_triggers_update(project):
 
 
 @pytest.mark.django_db
+def test_local_path_autoset(organization):
+    with mock.patch.object(Project, "update"):
+        p = Project.objects.create(
+            name="test-proj",
+            organization=organization,
+            scm_url='localhost',
+            scm_type='git'
+        )
+    assert p.local_path == f'_{p.id}__test_proj'
+
+
+@pytest.mark.django_db
 def test_foreign_key_change_changes_modified_by(project, organization):
     assert project._get_fields_snapshot()['organization_id'] == organization.id
     project.organization = Organization(name='foo', pk=41)
     assert project._get_fields_snapshot()['organization_id'] == 41
+
+
+@pytest.mark.django_db
+def test_project_related_jobs(project):
+    update = project.create_unified_job()
+    assert update.id in [u.id for u in project._get_related_jobs()]

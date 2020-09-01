@@ -1,20 +1,20 @@
 Background Tasks in AWX
 =======================
 
-In this document, we will go into a bit of detail about how and when AWX runs Python code _in the background_ (_i.e._, _outside_ of the context of an HTTP request), such as:
+In this document, we will go into a bit of detail about how and when AWX runs Python code _in the background_ (_i.e._, **outside** of the context of an HTTP request), such as:
 
 * Any time a Job is launched in AWX (a Job Template, an Ad Hoc Command, a Project
   Update, an Inventory Update, a System Job), a background process retrieves
   metadata _about_ that job from the database and forks some process (_e.g._,
   `ansible-playbook`, `awx-manage inventory_import`)
-* Certain expensive or time-consuming tasks run in the background
+* Certain expensive or time-consuming tasks running in the background
   asynchronously (_e.g._, when deleting an inventory).
 * AWX runs a variety of periodic background tasks on a schedule.  Some examples
   are:
     - AWX's "Task Manager/Scheduler" wakes up periodically and looks for
-      `pending` jobs that have been launched and are ready to start running.
+      `pending` jobs that have been launched and are ready to start running
     - AWX periodically runs code that looks for scheduled jobs and launches
-      them.
+      them
     - AWX runs a variety of periodic tasks that clean up temporary files, and
       performs various administrative checks
     - Every node in an AWX cluster runs a periodic task that serves as
@@ -26,7 +26,7 @@ Tasks, Queues and Workers
 
 To accomplish this, AWX makes use of a "Task Queue" abstraction.  Task Queues are used as a mechanism to distribute work across machines in an AWX installation.  A Task Queue's input is a unit of work called a Task. Dedicated worker processes running on every AWX node constantly monitor these queues for new work to perform.
 
-AWX communicates with these worker processes to mediate between clients and workers. This is done via distributed RabbitMQ queues and the already-acknowledged local queue that the Dispatcher is working through. Simply put: to initiate a task, the client (generally, Python code in the AWX API) publishes a message to a queue, and RabbitMQ then delivers that message to one or more workers.
+AWX communicates with these worker processes to mediate between clients and workers. This is done via distributed queues and the already-acknowledged local queue that the Dispatcher is working through. Simply put: to initiate a task, the client (generally, Python code in the AWX API) publishes a message to a queue, which is then delivered to one or more workers.
 
 Clustered AWX installations consist of multiple workers spread across every
 node, giving way to high availability and horizontal scaling.
@@ -263,9 +263,9 @@ This entire process enables a response of a `202 Accepted`, where instead of wai
 
 #### Handle Setting Changes
 
-Any time the user changes a setting in AWX (_e.g._, in `api/v2/settings`), data will be added to or altered in a database. Since querying databases directly can be extremely time-consuming, each node in a cluster runs a local `memcached` server, none of which are aware of each other. They all potentially have different values contained within, but ultimately need to be consistent. So how can this be accomplished?
+Any time the user changes a setting in AWX (_e.g._, in `api/v2/settings`), data will be added to or altered in a database. Since querying databases directly can be extremely time-consuming, each node in a cluster runs a local `redis-cache` server, none of which are aware of each other. They all potentially have different values contained within, but ultimately need to be consistent. So how can this be accomplished?
 
-"Handle Setting Changes" provides the solution!  This "fanout" task (_i.e._, all nodes execute it) makes it so that there is a single source of truth even within a clustered system. Whenever a database setting is accessed, and that setting's name is not present in `memcached`, it grabs the setting from the database and then populates it in the applicable node's cache.  When any database setting gets altered, all of the `memcached` servers on each node needs to "forget" the value that they previously retained. By deleting the setting in `memcached` on all nodes with the use of this task, we assure that the next time it is accessed, the database will be consulted for the most up-to-date value.
+"Handle Setting Changes" provides the solution!  This "fanout" task (_i.e._, all nodes execute it) makes it so that there is a single source of truth even within a clustered system. Whenever a database setting is accessed, and that setting's name is not present in `redis-cache`, it grabs the setting from the database and then populates it in the applicable node's cache.  When any database setting gets altered, all of the `redis-cache` servers on each node needs to "forget" the value that they previously retained. By deleting the setting in `redis-cache` on all nodes with the use of this task, we assure that the next time it is accessed, the database will be consulted for the most up-to-date value.
 
 
 ### Analytics and Administrative Tasks

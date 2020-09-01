@@ -19,10 +19,14 @@ from functools import reduce, wraps
 from decimal import Decimal
 
 # Django
-from django.core.exceptions import ObjectDoesNotExist
-from django.db import DatabaseError
+from django.core.exceptions import ObjectDoesNotExist, FieldDoesNotExist
 from django.utils.translation import ugettext_lazy as _
+from django.utils.functional import cached_property
 from django.db.models.fields.related import ForeignObjectRel, ManyToManyField
+from django.db.models.fields.related_descriptors import (
+    ForwardManyToOneDescriptor,
+    ManyToManyDescriptor
+)
 from django.db.models.query import QuerySet
 from django.db.models import Q
 
@@ -32,20 +36,28 @@ from django.utils.encoding import smart_str
 from django.utils.text import slugify
 from django.apps import apps
 
+# AWX
+from awx.conf.license import get_license
+
 logger = logging.getLogger('awx.main.utils')
 
-__all__ = ['get_object_or_400', 'camelcase_to_underscore', 'memoize', 'memoize_delete',
-           'get_ansible_version', 'get_ssh_version', 'get_licenser', 'get_awx_version', 'update_scm_url',
-           'get_type_for_model', 'get_model_for_type', 'copy_model_by_class', 'region_sorting',
-           'copy_m2m_relationships', 'prefetch_page_capabilities', 'to_python_boolean',
-           'ignore_inventory_computed_fields', 'ignore_inventory_group_removal',
-           '_inventory_updates', 'get_pk_from_dict', 'getattrd', 'getattr_dne', 'NoDefaultProvided',
-           'get_current_apps', 'set_current_apps',
-           'extract_ansible_vars', 'get_search_fields', 'get_system_task_capacity', 'get_cpu_capacity', 'get_mem_capacity',
-           'wrap_args_with_proot', 'build_proot_temp_dir', 'check_proot_installed', 'model_to_dict',
-           'model_instance_diff', 'parse_yaml_or_json', 'RequireDebugTrueOrTest',
-           'has_model_field_prefetched', 'set_environ', 'IllegalArgumentError', 'get_custom_venv_choices', 'get_external_account',
-           'task_manager_bulk_reschedule', 'schedule_task_manager', 'classproperty']
+__all__ = [
+    'get_object_or_400', 'camelcase_to_underscore', 'underscore_to_camelcase', 'memoize',
+    'memoize_delete', 'get_ansible_version', 'get_licenser', 'get_awx_http_client_headers',
+    'get_awx_version', 'update_scm_url', 'get_type_for_model', 'get_model_for_type',
+    'copy_model_by_class', 'region_sorting', 'copy_m2m_relationships',
+    'prefetch_page_capabilities', 'to_python_boolean', 'ignore_inventory_computed_fields',
+    'ignore_inventory_group_removal', '_inventory_updates', 'get_pk_from_dict', 'getattrd',
+    'getattr_dne', 'NoDefaultProvided', 'get_current_apps', 'set_current_apps',
+    'extract_ansible_vars', 'get_search_fields', 'get_system_task_capacity',
+    'get_cpu_capacity', 'get_mem_capacity', 'wrap_args_with_proot', 'build_proot_temp_dir',
+    'check_proot_installed', 'model_to_dict', 'NullablePromptPseudoField',
+    'model_instance_diff', 'parse_yaml_or_json', 'RequireDebugTrueOrTest',
+    'has_model_field_prefetched', 'set_environ', 'IllegalArgumentError',
+    'get_custom_venv_choices', 'get_external_account', 'task_manager_bulk_reschedule',
+    'schedule_task_manager', 'classproperty', 'create_temporary_fifo', 'truncate_stdout',
+    'StubLicense'
+]
 
 
 def get_object_or_400(klass, *args, **kwargs):
@@ -90,6 +102,14 @@ def camelcase_to_underscore(s):
     '''
     s = re.sub(r'(((?<=[a-z])[A-Z])|([A-Z](?![A-Z]|$)))', '_\\1', s)
     return s.lower().strip('_')
+
+
+def underscore_to_camelcase(s):
+    '''
+    Convert lowercase_with_underscore names to CamelCase.
+    '''
+    return ''.join(x.capitalize() or '_' for x in s.split('_'))
+
 
 
 class RequireDebugTrueOrTest(logging.Filter):
@@ -170,20 +190,6 @@ def get_ansible_version():
     return _get_ansible_version('ansible')
 
 
-@memoize()
-def get_ssh_version():
-    '''
-    Return SSH version installed.
-    '''
-    try:
-        proc = subprocess.Popen(['ssh', '-V'],
-                                stderr=subprocess.PIPE)
-        result = smart_str(proc.communicate()[1])
-        return result.split(" ")[0].split("_")[1]
-    except Exception:
-        return 'unknown'
-
-
 def get_awx_version():
     '''
     Return AWX version as reported by setuptools.
@@ -194,6 +200,19 @@ def get_awx_version():
         return pkg_resources.require('awx')[0].version
     except Exception:
         return __version__
+
+
+def get_awx_http_client_headers():
+    license = get_license(show_key=False).get('license_type', 'UNLICENSED')
+    headers = {
+        'Content-Type': 'application/json',
+        'User-Agent': '{} {} ({})'.format(
+            'AWX' if license == 'open' else 'Red Hat Ansible Tower',
+            get_awx_version(),
+            license
+        )
+    }
+    return headers
 
 
 class StubLicense(object):
@@ -238,7 +257,7 @@ def update_scm_url(scm_type, url, username=True, password=True,
     # git: https://www.kernel.org/pub/software/scm/git/docs/git-clone.html#URLS
     # hg: http://www.selenic.com/mercurial/hg.1.html#url-paths
     # svn: http://svnbook.red-bean.com/en/1.7/svn-book.html#svn.advanced.reposurls
-    if scm_type not in ('git', 'hg', 'svn', 'insights'):
+    if scm_type not in ('git', 'hg', 'svn', 'insights', 'archive'):
         raise ValueError(_('Unsupported SCM type "%s"') % str(scm_type))
     if not url.strip():
         return ''
@@ -284,7 +303,8 @@ def update_scm_url(scm_type, url, username=True, password=True,
         'git': ('ssh', 'git', 'git+ssh', 'http', 'https', 'ftp', 'ftps', 'file'),
         'hg': ('http', 'https', 'ssh', 'file'),
         'svn': ('http', 'https', 'svn', 'svn+ssh', 'file'),
-        'insights': ('http', 'https')
+        'insights': ('http', 'https'),
+        'archive': ('http', 'https'),
     }
     if parts.scheme not in scm_type_schemes.get(scm_type, ()):
         raise ValueError(_('Unsupported %s URL') % scm_type)
@@ -320,7 +340,7 @@ def update_scm_url(scm_type, url, username=True, password=True,
             #raise ValueError('Password not supported for SSH with Mercurial.')
             netloc_password = ''
 
-    if netloc_username and parts.scheme != 'file' and scm_type != "insights":
+    if netloc_username and parts.scheme != 'file' and scm_type not in ("insights", "archive"):
         netloc = u':'.join([urllib.parse.quote(x,safe='') for x in (netloc_username, netloc_password) if x])
     else:
         netloc = u''
@@ -347,9 +367,14 @@ def get_allowed_fields(obj, serializer_mapping):
         'oauth2accesstoken': ['last_used'],
         'oauth2application': ['client_secret']
     }
-    field_blacklist = ACTIVITY_STREAM_FIELD_EXCLUSIONS.get(obj._meta.model_name, [])
-    if field_blacklist:
-        allowed_fields = [f for f in allowed_fields if f not in field_blacklist]
+    model_name = obj._meta.model_name
+    fields_excluded = ACTIVITY_STREAM_FIELD_EXCLUSIONS.get(model_name, [])
+    # see definition of from_db for CredentialType
+    # injection logic of any managed types are incompatible with activity stream
+    if model_name == 'credentialtype' and obj.managed_by_tower and obj.namespace:
+        fields_excluded.extend(['inputs', 'injectors'])
+    if fields_excluded:
+        allowed_fields = [f for f in allowed_fields if f not in fields_excluded]
     return allowed_fields
 
 
@@ -428,6 +453,39 @@ def model_to_dict(obj, serializer_mapping=None):
     return attr_d
 
 
+class CharPromptDescriptor:
+    """Class used for identifying nullable launch config fields from class
+    ex. Schedule.limit
+    """
+    def __init__(self, field):
+        self.field = field
+
+
+class NullablePromptPseudoField:
+    """
+    Interface for pseudo-property stored in `char_prompts` dict
+    Used in LaunchTimeConfig and submodels, defined here to avoid circular imports
+    """
+    def __init__(self, field_name):
+        self.field_name = field_name
+
+    @cached_property
+    def field_descriptor(self):
+        return CharPromptDescriptor(self)
+
+    def __get__(self, instance, type=None):
+        if instance is None:
+            # for inspection on class itself
+            return self.field_descriptor
+        return instance.char_prompts.get(self.field_name, None)
+
+    def __set__(self, instance, value):
+        if value in (None, {}):
+            instance.char_prompts.pop(self.field_name, None)
+        else:
+            instance.char_prompts[self.field_name] = value
+
+
 def copy_model_by_class(obj1, Class2, fields, kwargs):
     '''
     Creates a new unsaved object of type Class2 using the fields from obj1
@@ -435,9 +493,10 @@ def copy_model_by_class(obj1, Class2, fields, kwargs):
     '''
     create_kwargs = {}
     for field_name in fields:
-        # Foreign keys can be specified as field_name or field_name_id.
-        id_field_name = '%s_id' % field_name
-        if hasattr(obj1, id_field_name):
+        descriptor = getattr(Class2, field_name)
+        if isinstance(descriptor, ForwardManyToOneDescriptor):  # ForeignKey
+            # Foreign keys can be specified as field_name or field_name_id.
+            id_field_name = '%s_id' % field_name
             if field_name in kwargs:
                 value = kwargs[field_name]
             elif id_field_name in kwargs:
@@ -447,15 +506,29 @@ def copy_model_by_class(obj1, Class2, fields, kwargs):
             if hasattr(value, 'id'):
                 value = value.id
             create_kwargs[id_field_name] = value
+        elif isinstance(descriptor, CharPromptDescriptor):
+            # difficult case of copying one launch config to another launch config
+            new_val = None
+            if field_name in kwargs:
+                new_val = kwargs[field_name]
+            elif hasattr(obj1, 'char_prompts'):
+                if field_name in obj1.char_prompts:
+                    new_val = obj1.char_prompts[field_name]
+            elif hasattr(obj1, field_name):
+                # extremely rare case where a template spawns a launch config - sliced jobs
+                new_val = getattr(obj1, field_name)
+            if new_val is not None:
+                create_kwargs.setdefault('char_prompts', {})
+                create_kwargs['char_prompts'][field_name] = new_val
+        elif isinstance(descriptor, ManyToManyDescriptor):
+            continue  # not copied in this method
         elif field_name in kwargs:
             if field_name == 'extra_vars' and isinstance(kwargs[field_name], dict):
                 create_kwargs[field_name] = json.dumps(kwargs['extra_vars'])
             elif not isinstance(Class2._meta.get_field(field_name), (ForeignObjectRel, ManyToManyField)):
                 create_kwargs[field_name] = kwargs[field_name]
         elif hasattr(obj1, field_name):
-            field_obj = obj1._meta.get_field(field_name)
-            if not isinstance(field_obj, ManyToManyField):
-                create_kwargs[field_name] = getattr(obj1, field_name)
+            create_kwargs[field_name] = getattr(obj1, field_name)
 
     # Apply class-specific extra processing for origination of unified jobs
     if hasattr(obj1, '_update_unified_job_kwargs') and obj1.__class__ != Class2:
@@ -474,7 +547,10 @@ def copy_m2m_relationships(obj1, obj2, fields, kwargs=None):
     '''
     for field_name in fields:
         if hasattr(obj1, field_name):
-            field_obj = obj1._meta.get_field(field_name)
+            try:
+                field_obj = obj1._meta.get_field(field_name)
+            except FieldDoesNotExist:
+                continue
             if isinstance(field_obj, ManyToManyField):
                 # Many to Many can be specified as field_name
                 src_field_value = getattr(obj1, field_name)
@@ -497,20 +573,16 @@ def get_type_for_model(model):
     return camelcase_to_underscore(opts.object_name)
 
 
-def get_model_for_type(type):
+def get_model_for_type(type_name):
     '''
     Return model class for a given type name.
     '''
-    from django.contrib.contenttypes.models import ContentType
-    for ct in ContentType.objects.filter(Q(app_label='main') | Q(app_label='auth', model='user')):
-        ct_model = ct.model_class()
-        if not ct_model:
-            continue
-        ct_type = get_type_for_model(ct_model)
-        if type == ct_type:
-            return ct_model
+    model_str = underscore_to_camelcase(type_name)
+    if model_str == 'User':
+        use_app = 'auth'
     else:
-        raise DatabaseError('"{}" is not a valid AWX model.'.format(type))
+        use_app = 'main'
+    return apps.get_model(use_app, model_str)
 
 
 def prefetch_page_capabilities(model, page, prefetch_list, user):
@@ -939,14 +1011,17 @@ def get_custom_venv_choices(custom_paths=None):
     custom_venv_choices = []
 
     for custom_venv_path in all_venv_paths:
-        if os.path.exists(custom_venv_path):
-            custom_venv_choices.extend([
-                os.path.join(custom_venv_path, x, '')
-                for x in os.listdir(custom_venv_path)
-                if x != 'awx' and
-                os.path.isdir(os.path.join(custom_venv_path, x)) and
-                os.path.exists(os.path.join(custom_venv_path, x, 'bin', 'activate'))
-            ])
+        try:
+            if os.path.exists(custom_venv_path):
+                custom_venv_choices.extend([
+                    os.path.join(custom_venv_path, x, '')
+                    for x in os.listdir(custom_venv_path)
+                    if x != 'awx' and
+                    os.path.isdir(os.path.join(custom_venv_path, x)) and
+                    os.path.exists(os.path.join(custom_venv_path, x, 'bin', 'activate'))
+                ])
+        except Exception:
+            logger.exception("Encountered an error while discovering custom virtual environments.")
     return custom_venv_choices
 
 
@@ -1012,3 +1087,36 @@ class classproperty:
 
     def __get__(self, instance, ownerclass):
         return self.fget(ownerclass)
+
+
+def create_temporary_fifo(data):
+    """Open fifo named pipe in a new thread using a temporary file path. The
+    thread blocks until data is read from the pipe.
+    Returns the path to the fifo.
+    :param data(bytes): Data to write to the pipe.
+    """
+    path = os.path.join(tempfile.mkdtemp(), next(tempfile._get_candidate_names()))
+    os.mkfifo(path, stat.S_IRUSR | stat.S_IWUSR)
+
+    threading.Thread(
+        target=lambda p, d: open(p, 'wb').write(d),
+        args=(path, data)
+    ).start()
+    return path
+
+
+def truncate_stdout(stdout, size):
+    from awx.main.constants import ANSI_SGR_PATTERN
+
+    if size <= 0 or len(stdout) <= size:
+        return stdout
+
+    stdout = stdout[:(size - 1)] + u'\u2026'
+    set_count, reset_count = 0, 0
+    for m in ANSI_SGR_PATTERN.finditer(stdout):
+        if m.group() == u'\u001b[0m':
+            reset_count += 1
+        else:
+            set_count += 1
+
+    return stdout + u'\u001b[0m' * (set_count - reset_count)

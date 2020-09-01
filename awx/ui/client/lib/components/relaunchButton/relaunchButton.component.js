@@ -20,6 +20,7 @@ function atRelaunchCtrl (
     $state, $q, $scope
 ) {
     const vm = this;
+    vm.strings = strings;
     const jobObj = new Job();
     const jobTemplate = new JobTemplate();
 
@@ -115,6 +116,9 @@ function atRelaunchCtrl (
                                 },
                                 diffMode: {
                                     value: populatedJob.diff_mode
+                                },
+                                scmBranch: {
+                                    value: populatedJob.scm_branch
                                 }
                             },
                             triggerModalOpen: true

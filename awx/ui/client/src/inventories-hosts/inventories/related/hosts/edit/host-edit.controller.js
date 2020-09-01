@@ -5,17 +5,14 @@
  *************************************************/
 
  export default
- 	['$scope', '$state', '$stateParams', 'GenerateForm', 'ParseTypeChange', 'HostsService', 'host', '$rootScope',
- 	function($scope, $state, $stateParams, GenerateForm, ParseTypeChange, HostsService, host, $rootScope){
+ 	['$scope', '$state', 'HostsService', 'host', '$rootScope',
+ 	function($scope, $state, HostsService, host, $rootScope){
         $scope.isSmartInvHost = $state.includes('inventories.editSmartInventory.hosts.edit');
  		$scope.parseType = 'yaml';
  		$scope.formCancel = function(){
  			$state.go('^', null, {reload: true});
  		};
  		$scope.toggleHostEnabled = function(){
-			if ($scope.host.has_inventory_sources){
-				return;
-			}
  			$scope.host.enabled = !$scope.host.enabled;
  		};
  		$scope.toggleEnabled = function(){
@@ -29,6 +26,9 @@
  				description: $scope.description,
  				enabled: $scope.host.enabled
  			};
+                        if (typeof $scope.host.instance_id !== 'undefined') {
+                            host.instance_id = $scope.host.instance_id;
+                        }
  			HostsService.put(host).then(function(){
  				$state.go('.', null, {reload: true});
  			});

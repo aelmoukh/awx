@@ -2,50 +2,10 @@ import pytest
 from unittest import mock
 
 from awx.main.migrations import _inventory_source as invsrc
-from awx.main.models import InventorySource
 
 from django.apps import apps
 
-
-@pytest.mark.django_db
-def test_inv_src_manual_removal(inventory_source):
-    inventory_source.source = ''
-    inventory_source.save()
-
-    assert InventorySource.objects.filter(pk=inventory_source.pk).exists()
-    invsrc.remove_manual_inventory_sources(apps, None)
-    assert not InventorySource.objects.filter(pk=inventory_source.pk).exists()
-
-
-@pytest.mark.django_db
-def test_rax_inv_src_removal(inventory_source):
-    inventory_source.source = 'rax'
-    inventory_source.save()
-
-    assert InventorySource.objects.filter(pk=inventory_source.pk).exists()
-    invsrc.remove_rax_inventory_sources(apps, None)
-    assert not InventorySource.objects.filter(pk=inventory_source.pk).exists()
-
-
-@pytest.mark.django_db
-def test_inv_src_rename(inventory_source_factory):
-    inv_src01 = inventory_source_factory('t1')
-
-    invsrc.rename_inventory_sources(apps, None)
-
-    inv_src01.refresh_from_db()
-    # inv-is-t1 is generated in the inventory_source_factory
-    assert inv_src01.name == 't1 - inv-is-t1 - 0'
-
-
-@pytest.mark.django_db
-def test_azure_inv_src_removal(inventory_source):
-    inventory_source.source = 'azure'
-    inventory_source.save()
-
-    assert InventorySource.objects.filter(pk=inventory_source.pk).exists()
-    invsrc.remove_azure_inventory_sources(apps, None)
-    assert not InventorySource.objects.filter(pk=inventory_source.pk).exists()
+from awx.main.models import InventorySource
 
 
 @pytest.mark.parametrize('vars,id_var,result', [
@@ -79,3 +39,19 @@ def test_apply_new_instance_id(inventory_source):
     host2.refresh_from_db()
     assert host1.instance_id == ''
     assert host2.instance_id == 'bad_user'
+
+
+@pytest.mark.django_db
+def test_replacement_scm_sources(inventory):
+    inv_source = InventorySource.objects.create(
+        name='test',
+        inventory=inventory,
+        organization=inventory.organization,
+        source='ec2'
+    )
+    invsrc.create_scm_script_substitute(apps, 'ec2')
+    inv_source.refresh_from_db()
+    assert inv_source.source == 'scm'
+    assert inv_source.source_project
+    project = inv_source.source_project
+    assert 'Replacement project for' in project.name

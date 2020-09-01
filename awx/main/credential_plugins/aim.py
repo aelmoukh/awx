@@ -1,14 +1,9 @@
-from .plugin import CredentialPlugin
+from .plugin import CredentialPlugin, CertFiles, raise_for_status
 
-import os
-import stat
-import tempfile
-import threading
 from urllib.parse import quote, urlencode, urljoin
 
 from django.utils.translation import ugettext_lazy as _
 import requests
-
 
 aim_inputs = {
     'fields': [{
@@ -43,7 +38,7 @@ aim_inputs = {
         'id': 'object_query',
         'label': _('Object Query'),
         'type': 'string',
-        'help_text': _('Lookup query for the object. Ex: "Safe=TestSafe;Object=testAccountName123"'),
+        'help_text': _('Lookup query for the object. Ex: Safe=TestSafe;Object=testAccountName123'),
     }, {
         'id': 'object_query_format',
         'label': _('Object Query Format'),
@@ -58,24 +53,6 @@ aim_inputs = {
     }],
     'required': ['url', 'app_id', 'object_query'],
 }
-
-
-def create_temporary_fifo(data):
-    """Open fifo named pipe in a new thread using a temporary file path. The
-    thread blocks until data is read from the pipe.
-
-    Returns the path to the fifo.
-
-    :param data(bytes): Data to write to the pipe.
-    """
-    path = os.path.join(tempfile.mkdtemp(), next(tempfile._get_candidate_names()))
-    os.mkfifo(path, stat.S_IRUSR | stat.S_IWUSR)
-
-    threading.Thread(
-        target=lambda p, d: open(p, 'wb').write(d),
-        args=(path, data)
-    ).start()
-    return path
 
 
 def aim_backend(**kwargs):
@@ -99,27 +76,20 @@ def aim_backend(**kwargs):
     request_qs = '?' + urlencode(query_params, quote_via=quote)
     request_url = urljoin(url, '/'.join(['AIMWebService', 'api', 'Accounts']))
 
-    cert = None
-    if client_cert and client_key:
-        cert = (
-            create_temporary_fifo(client_cert.encode()),
-            create_temporary_fifo(client_key.encode())
+    with CertFiles(client_cert, client_key) as cert:
+        res = requests.get(
+            request_url + request_qs,
+            timeout=30,
+            cert=cert,
+            verify=verify,
+            allow_redirects=False,
         )
-    elif client_cert:
-        cert = create_temporary_fifo(client_cert.encode())
-
-    res = requests.get(
-        request_url + request_qs,
-        timeout=30,
-        cert=cert,
-        verify=verify,
-    )
-    res.raise_for_status()
+    raise_for_status(res)
     return res.json()['Content']
 
 
 aim_plugin = CredentialPlugin(
-    'CyberArk AIM Secret Lookup',
+    'CyberArk AIM Central Credential Provider Lookup',
     inputs=aim_inputs,
     backend=aim_backend
 )

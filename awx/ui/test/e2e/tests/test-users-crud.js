@@ -54,15 +54,12 @@ module.exports = {
         });
         const resources = [
             getOrganization(store.organization.name),
-            getAuditor(store.auditor.username),
-            getUser(store.user.username),
-            getUser(store.admin.username, true)
         ];
 
         Promise.all(resources)
             .then(([organization, auditor, user, admin]) => {
                 store.organization.name = `${store.organization.name}-organization`;
-                data = { organization, auditor, user, admin };
+                data = { organization };
                 done();
             });
         client.login();
@@ -117,7 +114,7 @@ module.exports = {
             .click('@save');
         client.waitForSpinny();
         users.search(store.user.username);
-        users.expect.element(row).text.contain(`${store.user.username}\n${store.user.firstName[0].toUpperCase() + store.user.firstName.slice(1)}\n${store.user.lastName}`);
+        users.expect.element(row).text.contain(`${store.user.username}\n${store.user.firstName}\n${store.user.lastName}`);
         client.logout();
     },
     'check if the new user can login': (client) => {

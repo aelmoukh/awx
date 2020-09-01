@@ -27,14 +27,16 @@ logger = logging.getLogger('awx.main.analytics')
 
 class MetricsView(APIView):
 
-    view_name = _('Metrics')
+    name = _('Metrics')
     swagger_topic = 'Metrics'
 
     renderer_classes = [renderers.PlainTextRenderer,
+                        renderers.PrometheusJSONRenderer,
                         renderers.BrowsableAPIRenderer,]
 
-    def get(self, request, format='txt'):
+    def get(self, request):
         ''' Show Metrics Details '''
         if (request.user.is_superuser or request.user.is_system_auditor):
             return Response(metrics().decode('UTF-8'))
         raise PermissionDenied()
+

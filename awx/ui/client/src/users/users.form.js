@@ -30,7 +30,6 @@ export default ['i18n', function(i18n) {
                     type: 'text',
                     ngDisabled: '!(user_obj.summary_fields.user_capabilities.edit || canAdd)',
                     required: false,
-                    capitalize: true
                 },
                 last_name: {
                     label: i18n._('Last Name'),
@@ -222,7 +221,7 @@ export default ['i18n', function(i18n) {
                             label: i18n._('Add'),
                             awToolTip: i18n._('Grant Permission'),
                             actionClass: 'at-Button--add',
-                            actionId: 'button-add',
+                            actionId: 'button-add--permission',
                             ngShow: '(!is_superuser && (user_obj.summary_fields.user_capabilities.edit || canAdd))'
                         }
                     },

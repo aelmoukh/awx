@@ -29,6 +29,9 @@ def job_template(mocker):
     mock_jt.pk = 5
     mock_jt.host_config_key = '9283920492'
     mock_jt.validation_errors = mock_JT_resource_data
+    mock_jt.webhook_service = ''
+    mock_jt.organization_id = None
+    mock_jt.webhook_credential_id = None
     return mock_jt
 
 
@@ -50,7 +53,8 @@ class TestJobTemplateSerializerGetRelated():
         'schedules',
         'activity_stream',
         'launch',
-        'notification_templates_any',
+        'webhook_key',
+        'notification_templates_started',
         'notification_templates_success',
         'notification_templates_error',
         'survey_spec',
@@ -103,8 +107,7 @@ class TestJobTemplateSerializerGetSummaryFields():
         with mocker.patch("awx.api.serializers.role_summary_fields_generator", return_value='Can eat pie'):
             with mocker.patch("awx.main.access.JobTemplateAccess.can_change", return_value='foobar'):
                 with mocker.patch("awx.main.access.JobTemplateAccess.can_copy", return_value='foo'):
-                    with mock.patch.object(jt_obj.__class__, 'get_deprecated_credential', return_value=None):
-                        response = serializer.get_summary_fields(jt_obj)
+                    response = serializer.get_summary_fields(jt_obj)
 
         assert response['user_capabilities']['copy'] == 'foo'
         assert response['user_capabilities']['edit'] == 'foobar'

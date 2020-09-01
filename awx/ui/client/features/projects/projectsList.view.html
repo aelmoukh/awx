@@ -12,6 +12,7 @@
         </smart-search>
         <div class="at-List-toolbarAction" ng-show="canAdd">
             <button
+                aria-label="{{:: vm.strings.get('list.ADD')}}"
                 type="button"
                 class="at-Button--add"
                 id="button-add"
@@ -40,7 +41,7 @@
                         status-tip="{{ project.statusTip }}"
                         status-click="vm.showSCMStatus(project.id)"
                         header-value="{{ project.name }}"
-                        header-link="/#/projects/{{ project.id }}"
+                        header-state="projects.edit({project_id:{{project.id}}})"
                         header-tag="{{ vm.projectTypes[project.scm_type] }}">
                     </at-row-item>
                     <div class="at-Row-actions">
@@ -80,6 +81,10 @@
                         </div>
                         <at-truncate string="{{ project.scm_revision }}" maxLength="7"></at-truncate>
                     </div>
+                    <at-row-item
+                        label-value="{{:: vm.strings.get('list.ROW_ITEM_LABEL_DESCRIPTION')}}"
+                        value="{{ project.description | sanitize }}">
+                    </at-row-item>
                     <at-row-item
                         label-value="{{:: vm.strings.get('list.ROW_ITEM_LABEL_ORGANIZATION')}}"
                         value="{{ project.summary_fields.organization.name }}"

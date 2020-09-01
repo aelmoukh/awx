@@ -265,18 +265,6 @@ def test_job_launch_fails_without_credential_access(job_template_prompts, runtim
 
 
 @pytest.mark.django_db
-@pytest.mark.job_runtime_vars
-def test_job_block_scan_job_type_change(job_template_prompts, post, admin_user):
-    job_template = job_template_prompts(True)
-
-    # Assure that changing the type of a scan job blocks the launch
-    response = post(reverse('api:job_template_launch', kwargs={'pk':job_template.pk}),
-                    dict(job_type='scan'), admin_user, expect=400)
-
-    assert 'job_type' in response.data
-
-
-@pytest.mark.django_db
 def test_job_launch_JT_with_validation(machine_credential, credential, deploy_jobtemplate):
     deploy_jobtemplate.extra_vars = '{"job_template_var": 3}'
     deploy_jobtemplate.ask_credential_on_launch = True
@@ -309,14 +297,14 @@ def test_job_launch_with_default_creds(machine_credential, vault_credential, dep
 
     prompted_fields, ignored_fields, errors = deploy_jobtemplate._accept_or_ignore_job_kwargs(**kv)
     job_obj = deploy_jobtemplate.create_unified_job(**prompted_fields)
-    assert job_obj.credential == machine_credential.pk
-    assert job_obj.vault_credential == vault_credential.pk
+    assert job_obj.machine_credential.pk == machine_credential.pk
+    assert job_obj.vault_credentials[0].pk == vault_credential.pk
 
 
 @pytest.mark.django_db
 def test_job_launch_JT_enforces_unique_credentials_kinds(machine_credential, credentialtype_aws, deploy_jobtemplate):
     """
-    JT launching should require that extra_credentials have distinct CredentialTypes
+    JT launching should require that credentials have distinct CredentialTypes
     """
     creds = []
     for i in range(2):
@@ -350,14 +338,14 @@ def test_job_launch_with_empty_creds(machine_credential, vault_credential, deplo
 
     prompted_fields, ignored_fields, errors = deploy_jobtemplate._accept_or_ignore_job_kwargs(**serializer.validated_data)
     job_obj = deploy_jobtemplate.create_unified_job(**prompted_fields)
-    assert job_obj.credential is deploy_jobtemplate.credential
-    assert job_obj.vault_credential is deploy_jobtemplate.vault_credential
+    assert job_obj.machine_credential.pk == deploy_jobtemplate.machine_credential.pk
+    assert job_obj.vault_credentials[0].pk == deploy_jobtemplate.vault_credentials[0].pk
 
 
 @pytest.mark.django_db
 def test_job_launch_fails_with_missing_vault_password(machine_credential, vault_credential,
                                                       deploy_jobtemplate, post, rando):
-    vault_credential.vault_password = 'ASK'
+    vault_credential.inputs['vault_password'] = 'ASK'
     vault_credential.save()
     deploy_jobtemplate.credentials.add(vault_credential)
     deploy_jobtemplate.execute_role.members.add(rando)
@@ -440,7 +428,7 @@ def test_job_launch_fails_with_missing_multivault_password(machine_credential, v
 @pytest.mark.django_db
 def test_job_launch_fails_with_missing_ssh_password(machine_credential, deploy_jobtemplate, post,
                                                     rando):
-    machine_credential.password = 'ASK'
+    machine_credential.inputs['password'] = 'ASK'
     machine_credential.save()
     deploy_jobtemplate.credentials.add(machine_credential)
     deploy_jobtemplate.execute_role.members.add(rando)
@@ -457,9 +445,9 @@ def test_job_launch_fails_with_missing_ssh_password(machine_credential, deploy_j
 @pytest.mark.django_db
 def test_job_launch_fails_with_missing_vault_and_ssh_password(machine_credential, vault_credential,
                                                               deploy_jobtemplate, post, rando):
-    vault_credential.vault_password = 'ASK'
+    vault_credential.inputs['vault_password'] = 'ASK'
     vault_credential.save()
-    machine_credential.password = 'ASK'
+    machine_credential.inputs['password'] = 'ASK'
     machine_credential.save()
     deploy_jobtemplate.credentials.add(machine_credential)
     deploy_jobtemplate.credentials.add(vault_credential)
@@ -477,7 +465,7 @@ def test_job_launch_fails_with_missing_vault_and_ssh_password(machine_credential
 @pytest.mark.django_db
 def test_job_launch_pass_with_prompted_vault_password(machine_credential, vault_credential,
                                                       deploy_jobtemplate, post, rando):
-    vault_credential.vault_password = 'ASK'
+    vault_credential.inputs['vault_password'] = 'ASK'
     vault_credential.save()
     deploy_jobtemplate.credentials.add(machine_credential)
     deploy_jobtemplate.credentials.add(vault_credential)
@@ -495,25 +483,45 @@ def test_job_launch_pass_with_prompted_vault_password(machine_credential, vault_
 
 
 @pytest.mark.django_db
-def test_job_launch_JT_with_credentials(machine_credential, credential, net_credential, deploy_jobtemplate):
+def test_job_launch_JT_with_credentials(machine_credential, credential, net_credential, kube_credential, deploy_jobtemplate):
     deploy_jobtemplate.ask_credential_on_launch = True
     deploy_jobtemplate.save()
 
-    kv = dict(credentials=[credential.pk, net_credential.pk, machine_credential.pk])
+    kv = dict(credentials=[credential.pk, net_credential.pk, machine_credential.pk, kube_credential.pk])
     serializer = JobLaunchSerializer(data=kv, context={'template': deploy_jobtemplate})
     validated = serializer.is_valid()
     assert validated, serializer.errors
 
-    kv['credentials'] = [credential, net_credential, machine_credential]  # convert to internal value
+    kv['credentials'] = [credential, net_credential, machine_credential, kube_credential]  # convert to internal value
     prompted_fields, ignored_fields, errors = deploy_jobtemplate._accept_or_ignore_job_kwargs(
         _exclude_errors=['required', 'prompts'], **kv)
     job_obj = deploy_jobtemplate.create_unified_job(**prompted_fields)
 
     creds = job_obj.credentials.all()
-    assert len(creds) == 3
+    assert len(creds) == 4
     assert credential in creds
     assert net_credential in creds
     assert machine_credential in creds
+    assert kube_credential in creds
+
+
+@pytest.mark.django_db
+def test_job_branch_rejected_and_accepted(deploy_jobtemplate):
+    deploy_jobtemplate.ask_scm_branch_on_launch = True
+    deploy_jobtemplate.save()
+    prompted_fields, ignored_fields, errors = deploy_jobtemplate._accept_or_ignore_job_kwargs(
+        scm_branch='foobar'
+    )
+    assert 'scm_branch' in ignored_fields
+    assert 'does not allow override of branch' in errors['scm_branch']
+
+    deploy_jobtemplate.project.allow_override = True
+    deploy_jobtemplate.project.save()
+    prompted_fields, ignored_fields, errors = deploy_jobtemplate._accept_or_ignore_job_kwargs(
+        scm_branch='foobar'
+    )
+    assert not ignored_fields
+    assert prompted_fields['scm_branch'] == 'foobar'
 
 
 @pytest.mark.django_db

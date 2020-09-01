@@ -3,6 +3,8 @@ global.$AnsibleConfig = null;
 // Provided via Webpack DefinePlugin in webpack.config.js
 global.$ENV = {};
 
+global.$ConfigResponse = {};
+
 var urlPrefix;
 
 if ($basePath) {
@@ -161,16 +163,16 @@ angular
             // })
         }
     ])
-    .run(['$stateExtender', '$q', '$compile', '$cookies', '$rootScope', '$log', '$stateParams',
+    .run(['$q', '$cookies', '$rootScope', '$log', '$stateParams',
         'CheckLicense', '$location', 'Authorization', 'LoadBasePaths', 'Timer',
-        'LoadConfig', 'Store', 'pendoService', 'Prompt', 'Rest',
-        'Wait', 'ProcessErrors', '$state', 'GetBasePath', 'ConfigService',
-        '$filter', 'SocketService', 'AppStrings', '$transitions',
-        function($stateExtender, $q, $compile, $cookies, $rootScope, $log, $stateParams,
+        'LoadConfig', 'Store', 'pendoService', 'Rest',
+        '$state', 'GetBasePath', 'ConfigService', 'ProcessErrors',
+        'SocketService', 'AppStrings', '$transitions', 'i18n',
+        function($q, $cookies, $rootScope, $log, $stateParams,
             CheckLicense, $location, Authorization, LoadBasePaths, Timer,
-            LoadConfig, Store, pendoService, Prompt, Rest, Wait,
-            ProcessErrors, $state, GetBasePath, ConfigService,
-            $filter, SocketService, AppStrings, $transitions) {
+            LoadConfig, Store, pendoService, Rest,
+            $state, GetBasePath, ConfigService, ProcessErrors,
+            SocketService, AppStrings, $transitions, i18n) {
 
             $rootScope.$state = $state;
             $rootScope.$state.matches = function(stateName) {
@@ -193,9 +195,14 @@ angular
             $rootScope.breadcrumb = {};
             $rootScope.BRAND_NAME = AppStrings.get('BRAND_NAME');
             $rootScope.tabTitle = `Ansible ${$rootScope.BRAND_NAME}`;
+            $rootScope.appStrings = AppStrings;
             $rootScope.$watch('$state.current.ncyBreadcrumbLabel', function(title) {
                 title = (title) ? "| " + title : "";
                 document.title = `Ansible ${$rootScope.BRAND_NAME} ${title}`;
+            });
+
+            $rootScope.$on('ws-approval', () => {
+                fetchApprovalsCount();
             });
 
             function activateTab() {
@@ -208,6 +215,20 @@ angular
                     //base.replace(/\_/g, ' ');
                     base = (base === 'job_events' || base === 'job_host_summaries') ? 'jobs' : base;
                 }
+            }
+
+            function fetchApprovalsCount() {
+                Rest.setUrl(`${GetBasePath('workflow_approvals')}?status=pending&page_size=1`);
+                Rest.get()
+                    .then(({data}) => {
+                        $rootScope.pendingApprovalCount = data.count;
+                    })
+                    .catch(({data, status}) => {
+                        ProcessErrors({}, data, status, null, {
+                            hdr: i18n._('Error!'),
+                            msg: i18n._('Failed to get workflow jobs pending approval. GET returned status: ') + status
+                        });
+                    });
             }
 
             if ($rootScope.removeConfigReady) {
@@ -365,7 +386,11 @@ angular
                         var stime = timestammp[lastUser.id].time,
                             now = new Date().getTime();
                         if ((stime - now) <= 0) {
-                            $location.path('/login');
+                            if (global.$AnsibleConfig.login_redirect_override) {
+                                window.location.replace(global.$AnsibleConfig.login_redirect_override);
+                            } else {
+                                $location.path('/login');
+                            }
                         }
                     }
                     // If browser refresh, set the user_is_superuser value
@@ -387,6 +412,7 @@ angular
                                 }
                             });
                         });
+                        fetchApprovalsCount();
                     }
                 }
 

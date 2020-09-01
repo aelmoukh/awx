@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import pytest
 
 from django.core.exceptions import ImproperlyConfigured
@@ -26,7 +27,7 @@ def setup_module(module):
 
 
 def teardown_module(module):
-    # settings_registry will be persistent states unless we explicitly clean them up. 
+    # settings_registry will be persistent states unless we explicitly clean them up.
     settings_registry.unregister('NAMED_URL_FORMATS')
     settings_registry.unregister('NAMED_URL_GRAPH_NODES')
 
@@ -58,10 +59,25 @@ def test_organization(get, admin_user):
 
 @pytest.mark.django_db
 def test_job_template(get, admin_user):
-    test_jt = JobTemplate.objects.create(name='test_jt')
+    test_org = Organization.objects.create(name='test_org')
+    test_jt = JobTemplate.objects.create(name='test_jt', organization=test_org)
     url = reverse('api:job_template_detail', kwargs={'pk': test_jt.pk})
     response = get(url, user=admin_user, expect=200)
-    assert response.data['related']['named_url'].endswith('/test_jt/')
+    assert response.data['related']['named_url'].endswith('/test_jt++test_org/')
+
+
+@pytest.mark.django_db
+def test_job_template_old_way(get, admin_user, mocker):
+    test_org = Organization.objects.create(name='test_org')
+    test_jt = JobTemplate.objects.create(name='test_jt ♥', organization=test_org)
+    url = reverse('api:job_template_detail', kwargs={'pk': test_jt.pk})
+
+    response = get(url, user=admin_user, expect=200)
+    new_url = response.data['related']['named_url']
+    old_url = '/'.join([url.rsplit('/', 2)[0], test_jt.name, ''])
+
+    assert URLModificationMiddleware._convert_named_url(new_url) == url
+    assert URLModificationMiddleware._convert_named_url(old_url) == url
 
 
 @pytest.mark.django_db
@@ -170,7 +186,11 @@ def test_group(get, admin_user):
 def test_inventory_source(get, admin_user):
     test_org = Organization.objects.create(name='test_org')
     test_inv = Inventory.objects.create(name='test_inv', organization=test_org)
-    test_source = InventorySource.objects.create(name='test_source', inventory=test_inv)
+    test_source = InventorySource.objects.create(
+        name='test_source',
+        inventory=test_inv,
+        source='ec2'
+    )
     url = reverse('api:inventory_source_detail', kwargs={'pk': test_source.pk})
     response = get(url, user=admin_user, expect=200)
     assert response.data['related']['named_url'].endswith('/test_source++test_inv++test_org/')
@@ -199,3 +219,27 @@ def test_credential(get, admin_user, credentialtype_ssh):
     url = reverse('api:credential_detail', kwargs={'pk': test_cred.pk})
     response = get(url, user=admin_user, expect=200)
     assert response.data['related']['named_url'].endswith('/test_cred++Machine+ssh++/')
+
+
+@pytest.mark.django_db
+def test_403_vs_404(get):
+    cindy = User.objects.create(
+        username='cindy',
+        password='test_user',
+        is_superuser=False
+    )
+    bob = User.objects.create(
+        username='bob',
+        password='test_user',
+        is_superuser=False
+    )
+
+    # bob cannot see cindy, pk lookup should be a 403
+    url = reverse('api:user_detail', kwargs={'pk': cindy.pk})
+    get(url, user=bob, expect=403)
+
+    # bob cannot see cindy, username lookup should be a 404
+    get('/api/v2/users/cindy/', user=bob, expect=404)
+
+    get(f'/api/v2/users/{cindy.pk}/', expect=401)
+    get('/api/v2/users/cindy/', expect=404)

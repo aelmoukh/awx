@@ -18,11 +18,11 @@ const addEditElements = {
     redirectUris: '#application_redirect_uris_group input',
     clientType: '#application_client_type_group select',
     save: 'button[type=save]',
+    tokensTab: 'div.card button.at-Tab:nth-of-type(2)',
 };
 
 const authorizationGrantTypeOptions = {
     authorizationCode: 'Authorization code',
-    implicit: 'Implicit',
     resourceOwnerPasswordBased: 'Resource owner password-based',
 };
 
@@ -131,6 +131,12 @@ module.exports = {
                         actions
                     }
                 })
+            }
+        },
+        tokens: {
+            selector: 'div.card',
+            elements: {
+                list: '.at-List-container',
             }
         }
     },

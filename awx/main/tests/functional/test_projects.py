@@ -29,8 +29,8 @@ def team_project_list(organization_factory):
 @pytest.mark.django_db
 def test_get_project_path(project):
     # Test combining projects root with project local path
-    with mock.patch('awx.main.models.projects.settings.PROJECTS_ROOT', '/var/lib/awx'):
-        assert project.get_project_path(check_if_exists=False) == '/var/lib/awx/_92__test_proj'
+    with mock.patch('awx.main.models.projects.settings.PROJECTS_ROOT', '/var/lib/foo'):
+        assert project.get_project_path(check_if_exists=False) == f'/var/lib/foo/_{project.id}__test_proj'
 
 
 @pytest.mark.django_db
@@ -213,32 +213,12 @@ def test_project_credential_protection(post, put, project, organization, scm_cre
         }, org_admin, expect=403
     )
     post(
-        reverse('api:project_list'), { 
-            'name': 'should not create', 
-            'organization':organization.id, 
+        reverse('api:project_list'), {
+            'name': 'should not create',
+            'organization':organization.id,
             'credential': scm_credential.id
         }, org_admin, expect=403
     )
-
-
-@pytest.mark.django_db()
-def test_create_project_null_organization(post, organization, admin):
-    post(reverse('api:project_list'), { 'name': 't', 'organization': None}, admin, expect=201)
-
-
-@pytest.mark.django_db()
-def test_create_project_null_organization_xfail(post, organization, org_admin):
-    post(reverse('api:project_list'), { 'name': 't', 'organization': None}, org_admin, expect=403)
-
-
-@pytest.mark.django_db()
-def test_patch_project_null_organization(patch, organization, project, admin):
-    patch(reverse('api:project_detail', kwargs={'pk':project.id,}), { 'name': 't', 'organization': organization.id}, admin, expect=200)
-
-
-@pytest.mark.django_db()
-def test_patch_project_null_organization_xfail(patch, project, org_admin):
-    patch(reverse('api:project_detail', kwargs={'pk':project.id,}), { 'name': 't', 'organization': None}, org_admin, expect=400)
 
 
 @pytest.mark.django_db

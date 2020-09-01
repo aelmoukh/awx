@@ -10,9 +10,10 @@ from django.contrib.contenttypes.models import ContentType
 # AWX
 from awx.main.models import (
     UnifiedJobTemplate, Job, JobTemplate, WorkflowJobTemplate,
-    Project, WorkflowJob, Schedule,
+    WorkflowApprovalTemplate, Project, WorkflowJob, Schedule,
     Credential
 )
+from awx.api.versioning import reverse
 
 
 @pytest.mark.django_db
@@ -20,8 +21,33 @@ def test_subclass_types(rando):
     assert set(UnifiedJobTemplate._submodels_with_roles()) == set([
         ContentType.objects.get_for_model(JobTemplate).id,
         ContentType.objects.get_for_model(Project).id,
-        ContentType.objects.get_for_model(WorkflowJobTemplate).id
+        ContentType.objects.get_for_model(WorkflowJobTemplate).id,
+        ContentType.objects.get_for_model(WorkflowApprovalTemplate).id
+
     ])
+
+
+@pytest.mark.django_db
+def test_soft_unique_together(post, project, admin_user):
+    """This tests that SOFT_UNIQUE_TOGETHER restrictions are applied correctly.
+    """
+    jt1 = JobTemplate.objects.create(
+        name='foo_jt',
+        project=project
+    )
+    assert jt1.organization == project.organization
+    r = post(
+        url=reverse('api:job_template_list'),
+        data=dict(
+            name='foo_jt',  # same as first
+            project=project.id,
+            ask_inventory_on_launch=True,
+            playbook='helloworld.yml'
+        ),
+        user=admin_user,
+        expect=400
+    )
+    assert 'combination already exists' in str(r.data)
 
 
 @pytest.mark.django_db
@@ -63,7 +89,10 @@ class TestCreateUnifiedJob:
         second_job = job_with_links.copy_unified_job()
 
         # Check that job data matches the original variables
-        assert second_job.credential == job_with_links.credential
+        assert [c.pk for c in second_job.credentials.all()] == [
+            machine_credential.pk,
+            net_credential.pk
+        ]
         assert second_job.inventory == job_with_links.inventory
         assert second_job.limit == 'my_server'
         assert net_credential in second_job.credentials.all()
@@ -141,6 +170,39 @@ class TestMetaVars:
         data = job.awx_meta_vars()
         assert data['awx_schedule_id'] == schedule.pk
         assert 'awx_user_name' not in data
+
+    def test_scheduled_workflow_job_node_metavars(self, workflow_job_template):
+        schedule = Schedule.objects.create(
+            name='job-schedule',
+            rrule='DTSTART:20171129T155939z\nFREQ=MONTHLY',
+            unified_job_template=workflow_job_template
+        )
+
+        workflow_job = WorkflowJob.objects.create(
+            name='workflow-job',
+            workflow_job_template=workflow_job_template,
+            schedule=schedule
+        )
+
+        job = Job.objects.create(
+            launch_type='workflow'
+        )
+        workflow_job.workflow_nodes.create(job=job)
+        assert job.awx_meta_vars() == {
+            'awx_job_id': job.id,
+            'tower_job_id': job.id,
+            'awx_job_launch_type': 'workflow',
+            'tower_job_launch_type': 'workflow',
+            'awx_workflow_job_name': 'workflow-job',
+            'tower_workflow_job_name': 'workflow-job',
+            'awx_workflow_job_id': workflow_job.id,
+            'tower_workflow_job_id': workflow_job.id,
+            'awx_parent_job_schedule_id': schedule.id,
+            'tower_parent_job_schedule_id': schedule.id,
+            'awx_parent_job_schedule_name': 'job-schedule',
+            'tower_parent_job_schedule_name': 'job-schedule',
+            
+        }
 
 
 @pytest.mark.django_db
@@ -243,15 +305,18 @@ class TestTaskImpact:
             return job
         return r
 
-    def test_limit_task_impact(self, job_host_limit):
+    def test_limit_task_impact(self, job_host_limit, run_computed_fields_right_away):
         job = job_host_limit(5, 2)
+        job.inventory.update_computed_fields()
+        assert job.inventory.total_hosts == 5
         assert job.task_impact == 2 + 1  # forks becomes constraint
 
-    def test_host_task_impact(self, job_host_limit):
+    def test_host_task_impact(self, job_host_limit, run_computed_fields_right_away):
         job = job_host_limit(3, 5)
+        job.inventory.update_computed_fields()
         assert job.task_impact == 3 + 1  # hosts becomes constraint
 
-    def test_shard_task_impact(self, slice_job_factory):
+    def test_shard_task_impact(self, slice_job_factory, run_computed_fields_right_away):
         # factory creates on host per slice
         workflow_job = slice_job_factory(3, jt_kwargs={'forks': 50}, spawn=True)
         # arrange the jobs by their number
@@ -263,6 +328,7 @@ class TestTaskImpact:
             len(jobs[0].inventory.get_script_data(slice_number=i + 1, slice_count=3)['all']['hosts'])
             for i in range(3)
         ] == [1, 1, 1]
+        jobs[0].inventory.update_computed_fields()
         assert [job.task_impact for job in jobs] == [2, 2, 2]  # plus one base task impact
         # Uneven distribution - first job takes the extra host
         jobs[0].inventory.hosts.create(name='remainder_foo')
@@ -270,4 +336,5 @@ class TestTaskImpact:
             len(jobs[0].inventory.get_script_data(slice_number=i + 1, slice_count=3)['all']['hosts'])
             for i in range(3)
         ] == [2, 1, 1]
+        jobs[0].inventory.update_computed_fields()
         assert [job.task_impact for job in jobs] == [3, 2, 2]
